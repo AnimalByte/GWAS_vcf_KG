@@ -62,6 +62,6 @@ This Python script processes the annotated variant data and integrates it into a
    chmod +x demonstration.sh
    ./demonstration.sh
 2. ** Run the Python script to import the data into Neo4j:**
-   '''sh
+   ```sh
    python pathway_extraction.py
 
