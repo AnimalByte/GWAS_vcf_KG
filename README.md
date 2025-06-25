@@ -1,24 +1,33 @@
-# Bio-KG RAG: A Knowledge-Graph-Powered RAG System for GWAS Data
-
-## Abstract
-
+Bio-KG RAG: A Knowledge-Graph-Powered RAG System for GWAS Data
+Abstract
 Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (GO, HPO, Reactome, ClinVar) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
 
----
+System Architecture
+This project implements a GraphRAG architecture composed of three core components:
 
-## Project Structure
+Knowledge Graph (Neo4j): A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, biological pathways, associated phenotypes from clinical ontologies, and entities extracted from literature. This structured backbone allows for precise, multi-hop queries to uncover complex relationships.
 
+Vector Database (ChromaDB): A vector store containing embeddings of scientific abstracts from PubMed. This component enables fast and efficient semantic search, allowing the system to find documents based on conceptual meaning rather than just keywords. Embeddings are generated using a domain-specific PubMedBERT model.
+
+Query Engine (Local LLM): A large language model (Phi-3-medium) orchestrated by a Python script. It acts as the "brain" of the system, using a Named Entity Recognition (NER) model to understand user queries, retrieving context from both the knowledge graph and the vector database, and synthesizing this information to generate a comprehensive, evidence-based answer.
+
+Project Structure
 The project is organized into a modular pipeline, with each script performing a distinct data ingestion or processing task.
-
 
 /
 |-- data/
 |   |-- ukb-d-2395_1.vcf.gz         # Original GWAS VCF file (hg37)
 |-- models/
 |   |-- Phi-3-medium-128k-instruct-Q5_K_M.gguf  # The LLM file
-|-- results/                        # All output files are generated here
-|-- downloads/                      # Prerequisite files are downloaded here
+|-- results/                        # Directory for generated output files
+|-- downloads/                      # Directory for downloaded prerequisite files
+|
 |-- docker-compose.yml              # Neo4j service configuration
+|-- README.md                       # This documentation file
+|-- requirements.txt                # A list of all required Python packages
+|
+|-- run_pipeline.sh                 # Master script to run the full data pipeline
+|-- clean.sh                        # Utility script to clean the directory
 |
 |-- 1_neo4j_base_importer.py        # Loads base mutations and genes
 |-- 2_go_importer.py                # Loads Gene Ontology data and relationships
@@ -31,68 +40,67 @@ The project is organized into a modular pipeline, with each script performing a 
 |-- 9_create_embeddings.py          # Builds the vector database from abstracts
 |
 |-- query_engine.py                 # The final, interactive RAG query engine
-|-- clean.sh                        # Utility script to clean the directory
-|-- run_pipeline.sh                 # Master script to run the full pipeline
-|-- README.md                       # This file
 
+Methodology: The Data Pipeline
+The pipeline is executed by the run_pipeline.sh script, which orchestrates the following steps in order:
 
----
+Pre-processing
+Filtering for Significance: The raw GWAS VCF file is first filtered using bcftools to retain only genome-wide significant variants (P < 5x10⁻⁸).
 
-## Methodology: The Data Pipeline
+Genomic Coordinate Harmonization: The coordinates of the significant variants are converted ("lifted over") from the hg37/GRCh37 assembly to the modern hg38/GRCh38 assembly using CrossMap.
 
-The pipeline is executed by the `run_pipeline.sh` script, which orchestrates the following steps in order:
+Functional Annotation: The harmonized VCF file is annotated using the Ensembl Variant Effect Predictor (VEP) to identify affected genes and predict functional consequences.
 
-#### Pre-processing
-1.  **Filtering for Significance:** The raw GWAS VCF file is first filtered using `bcftools` to retain only genome-wide significant variants (P < 5x10⁻⁸). This focuses the analysis on the most statistically relevant data.
-2.  **Genomic Coordinate Harmonization:** The coordinates of the significant variants are converted ("lifted over") from the hg37/GRCh37 assembly to the modern hg38/GRCh38 assembly using `CrossMap`. This is a critical step to ensure compatibility with modern annotation databases.
-3.  **Functional Annotation:** The harmonized VCF file is annotated using the Ensembl Variant Effect Predictor (VEP) to identify the affected genes, predict the functional consequence of each variant, and retrieve initial annotations like UniProt IDs.
+Knowledge Graph Construction
+The core of the system is a Neo4j graph database, populated by a series of modular Python scripts:
 
-#### Knowledge Graph Construction
-The core of the system is a Neo4j graph database, which is populated by a series of modular Python scripts:
+Base Graph Import (1_neo4j_base_importer.py): Creates :Mutation and :Gene nodes.
 
-4.  **Base Graph Import (`1_neo4j_base_importer.py`):** Creates the foundational layer of the graph, consisting of `:Mutation` nodes from the GWAS data and the `:Gene` nodes they affect.
-5.  **Ontology Integration (`2_go_importer.py`, `3_hpo_importer.py`):** Enriches the graph by importing the full Gene Ontology (GO) and Human Phenotype Ontology (HPO), creating `:GO_Term` and `:Phenotype` nodes and the rich hierarchical relationships between them (`IS_A`, `PART_OF`, etc.).
-6.  **Pathway Integration (`4_reactome_importer.py`):** Adds `:Pathway` nodes from the Reactome database and connects them to the relevant `:Gene` nodes.
-7.  **Clinical Significance (`5_clinvar_importer.py`):** Enriches the `:Mutation` nodes with clinical significance data (e.g., "Benign," "Pathogenic") and links them to `:Disease` nodes from the ClinVar database.
+Ontology Integration (2_go_importer.py, 3_hpo_importer.py): Imports the Gene Ontology (GO) and Human Phenotype Ontology (HPO), creating :GO_Term and :Phenotype nodes and their rich hierarchies.
 
-#### Unstructured Data Integration
-8.  **Literature Retrieval (`6_pubmed_fetcher.py`):** Fetches relevant scientific abstracts from PubMed for the genes identified in the graph.
-9.  **Knowledge Extraction (`7_ner_importer.py`):** Uses a GPU-accelerated `scispaCy` Named Entity Recognition (NER) model to read the downloaded abstracts, identify mentions of biomedical concepts (diseases, chemicals, etc.), and load them into the graph as generic `:Entity` nodes linked to the `:Paper` they were mentioned in.
-10. **Entity Reconciliation (`8_ner_reconciliation.py`):** This crucial script links the unstructured and structured worlds. It intelligently merges the generic `:Entity` nodes created from the literature with the high-quality, "official" `:Gene`, `:Phenotype`, and `:Disease` nodes already in the graph.
+Pathway Integration (4_reactome_importer.py): Adds :Pathway nodes from the Reactome database.
 
-#### RAG System Preparation
-11. **Vector Embedding (`9_create_embeddings.py`):** Uses a PubMedBERT-based SentenceTransformer model to convert the semantic meaning of each PubMed abstract into a vector embedding. These embeddings are stored in a local ChromaDB vector database.
+Clinical Significance (5_clinvar_importer.py): Enriches :Mutation nodes with clinical significance data from ClinVar.
 
----
+Unstructured Data Integration
+Literature Retrieval (6_pubmed_fetcher.py): Fetches relevant PubMed abstracts for genes in the graph.
 
-## How to Run the System
+Knowledge Extraction (7_ner_importer.py): Uses a GPU-accelerated scispaCy NER model to identify biomedical entities in abstracts and adds them to the graph.
 
-Follow these steps to build and query the knowledge graph from scratch.
+Entity Reconciliation (8_ner_reconciliation.py): Links the unstructured and structured worlds by merging entities found in literature with the official ontology nodes in the graph.
 
-### Step 0: Initial Setup
+RAG System Preparation
+Vector Embedding (9_create_embeddings.py): Uses a PubMedBERT model to create vector embeddings for all abstracts and stores them in a local ChromaDB database.
 
-1.  **Environment:** Make sure your `gwas-env` conda environment is active.
-    ```bash
-    conda activate gwas-env
-    ```
-2.  **Dependencies:** Ensure all Python packages from our debugging sessions are installed.
-3.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
-    ```bash
-    bash clean.sh
-    ```
+How to Run the System
+Step 0: Initial Setup
+Conda Environment: Create and activate the gwas-env conda environment.
 
-### Step 1: Start the Database Service
+conda create -n gwas-env python=3.9
+conda activate gwas-env
 
+Dependencies: Install all required Python packages using the provided requirements.txt file. It's recommended to install llama-cpp-python with GPU support as a separate, final step.
+
+pip install -r requirements.txt
+CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
+
+(Note: You will also need system build tools like build-essential and cmake installed).
+
+Clean the Directory (Optional): To start completely fresh, run the clean.sh script.
+
+bash clean.sh
+
+Step 1: Start the Database Service
 Start the Neo4j Docker container in the background.
-```bash
+
 docker-compose up -d neo4j
 
 Step 2: Run the Full Data Pipeline
-Execute the master script. This will run all the data processing and import steps in the correct order.
+Execute the master script. This will run all data processing and import steps. Note: The script will pause for manual VEP annotation.
 
 bash run_pipeline.sh
 
 Step 3: Query Your Knowledge Graph
-Once the pipeline is complete, you can start the interactive RAG engine to ask questions.
+Once the pipeline is complete, start the interactive RAG engine to ask questions.
 
 python query_engine.py
