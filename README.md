@@ -11,7 +11,30 @@ Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic v
 The project is organized into a modular pipeline, with each script performing a distinct data ingestion or processing task.
 
 
-/ |-- data/ | |-- ukb-d-2395_1.vcf.gz # Original GWAS VCF file (hg37) |-- models/ | |-- Phi-3-medium-128k-instruct-Q5_K_M.gguf # The LLM file |-- results/ # All output files are generated here |-- downloads/ # Prerequisite files are downloaded here |-- docker-compose.yml # Neo4j service configuration | |-- 1_neo4j_base_importer.py # Loads base mutations and genes |-- 2_go_importer.py # Loads Gene Ontology data and relationships |-- 3_hpo_importer.py # Loads Human Phenotype Ontology data |-- 4_reactome_importer.py # Loads Reactome pathways and gene links |-- 5_clinvar_importer.py # Loads ClinVar clinical significance data |-- 6_pubmed_fetcher.py # Downloads abstracts from PubMed for relevant genes |-- 7_ner_importer.py # Extracts entities from abstracts and adds to graph |-- 8_ner_reconciliation.py # Reconciles extracted entities with known nodes |-- 9_create_embeddings.py # Builds the vector database from abstracts | |-- query_engine.py # The final, interactive RAG query engine |-- clean.sh # Utility script to clean the directory |-- run_pipeline.sh # Master script to run the full pipeline |-- README.md # This file
+/
+|-- data/
+|   |-- ukb-d-2395_1.vcf.gz         # Original GWAS VCF file (hg37)
+|-- models/
+|   |-- Phi-3-medium-128k-instruct-Q5_K_M.gguf  # The LLM file
+|-- results/                        # All output files are generated here
+|-- downloads/                      # Prerequisite files are downloaded here
+|-- docker-compose.yml              # Neo4j service configuration
+|
+|-- 1_neo4j_base_importer.py        # Loads base mutations and genes
+|-- 2_go_importer.py                # Loads Gene Ontology data and relationships
+|-- 3_hpo_importer.py               # Loads Human Phenotype Ontology data
+|-- 4_reactome_importer.py          # Loads Reactome pathways and gene links
+|-- 5_clinvar_importer.py           # Loads ClinVar clinical significance data
+|-- 6_pubmed_fetcher.py             # Downloads abstracts from PubMed for relevant genes
+|-- 7_ner_importer.py               # Extracts entities from abstracts and adds to graph
+|-- 8_ner_reconciliation.py         # Reconciles extracted entities with known nodes
+|-- 9_create_embeddings.py          # Builds the vector database from abstracts
+|
+|-- query_engine.py                 # The final, interactive RAG query engine
+|-- clean.sh                        # Utility script to clean the directory
+|-- run_pipeline.sh                 # Master script to run the full pipeline
+|-- README.md                       # This file
+
 
 ---
 
@@ -67,10 +90,10 @@ docker-compose up -d neo4j
 
 Step 2: Run the Full Data Pipeline
 Execute the master script. This will run all the data processing and import steps in the correct order.
+
 bash run_pipeline.sh
 
 Step 3: Query Your Knowledge Graph
 Once the pipeline is complete, you can start the interactive RAG engine to ask questions.
+
 python query_engine.py
-
-
