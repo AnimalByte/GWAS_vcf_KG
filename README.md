@@ -84,7 +84,6 @@ Follow these steps to build and query the knowledge graph from scratch.
 ### Step 1: Start the Database Service
 
 Start the Neo4j Docker container in the background.
-
 ```bash
 docker-compose up -d neo4j
 
