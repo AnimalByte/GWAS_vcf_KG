@@ -36,7 +36,7 @@ $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significa
 # --- Step 2: Annotate with VEP using Docker ---
 echo "[3/11] Annotating with VEP via Docker container..."
 
-# *** NEW: Add permission checks for both directories needed by Docker ***
+# Add permission checks for both directories needed by Docker
 echo "Verifying write permissions for the '~/.vep' cache directory..."
 if ! touch "$HOME/.vep/permission_test" 2>/dev/null; then
     echo "------------------------------------------------------------------"
@@ -68,20 +68,24 @@ fi
 rm "results/permission_test"
 echo "Results directory permissions are OK."
 
-
 # This command runs VEP inside its official Docker container.
-# -v mounts the local 'results' directory into the container's working directory.
-# -v also mounts the local VEP cache to prevent re-downloading.
+# It uses the local cache but allows an internet connection for the GO plugin to fetch its data.
 docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
     vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
-    --cache --offline --dir /opt/vep/.vep \
+    --cache \
+    --dir /opt/vep/.vep \
     --assembly GRCh38 \
     --fork 12 \
     --force_overwrite \
     --tab \
-    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,GO,SWISSPROT,TREMBL" \
-    --plugin Geno2MP \
-    --plugin ClinPred
+    --pick \
+    --distance 2000 \
+    --symbol \
+    --biotype \
+    --uniprot \
+    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,Gene,GO,SWISSPROT,TREMBL" \
+    --plugin GO
+
 
 # --- Step 3: Build the Knowledge Graph ---
 echo "[4/11] Building base graph (Mutations and Genes)..."
@@ -115,4 +119,3 @@ python 9_create_embeddings.py
 
 echo "--- Pipeline Complete! ---"
 echo "You can now run 'python query_engine.py' to chat with your knowledge graph."
-
