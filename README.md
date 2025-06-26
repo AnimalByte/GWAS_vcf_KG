@@ -73,7 +73,7 @@ The project is organized into a modular pipeline, with each script performing a 
 
 ### Step 0: Initial Setup
 
-1.  **Conda Environment:** Create a single conda environment for the project.
+1.  **Conda Environment:** Create and activate a single conda environment for the project.
     ```bash
     conda create -n gwas-env python=3.9
     conda activate gwas-env
@@ -82,7 +82,7 @@ The project is organized into a modular pipeline, with each script performing a 
 2.  **Install Dependencies:** Install all required packages.
     ```bash
     # Install command-line bioinformatics tools
-    conda install -c bioconda bcftools crossmap
+    conda install -c bioconda bcftools crossmap bgzip tabix
 
     # Install Python packages
     pip install -r requirements.txt
@@ -93,21 +93,26 @@ The project is organized into a modular pipeline, with each script performing a 
     ```
 
 3.  **Set up VEP Docker Environment (One-time only):**
-    This involves pulling the VEP Docker image and creating a local directory to store its cache files.
+    Pull the latest VEP Docker image. The pipeline script will handle the rest of the setup.
     ```bash
     # Pull the latest official VEP Docker image
     docker pull ensemblorg/ensembl-vep:latest
-
-    # Create a local directory for VEP data
+    
+    # Create the directory for VEP cache
     mkdir -p ~/.vep
-
-    # Run the VEP installer inside the container to download cache and plugin data
-    # This mounts your local .vep directory into the container for persistent storage.
-    docker run -t -i -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
-      INSTALL.pl -a cfp -s homo_sapiens -y GRCh38 --PLUGINS Geno2MP,ClinPred
+    
+    # Set permissions to allow the Docker container to write to the cache
+    sudo chmod -R 777 ~/.vep
     ```
 
-4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
+4. **Set Directory Permissions:**
+   The pipeline writes to the `results` directory. Ensure it has the correct permissions.
+   ```bash
+   mkdir -p results
+   sudo chmod -R 777 results
+   ```
+
+5.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
     ```bash
     bash clean.sh
     ```
@@ -121,15 +126,15 @@ docker-compose up -d neo4j
 
 ### Step 2: Run the Full Data Pipeline
 
-Execute the master script. This will run the entire, fully automated data processing pipeline.
+Execute the master script. This will run the entire, fully automated data processing and annotation pipeline.
 ```bash
 bash run_pipeline.sh
 ```
+*Note: The script now automatically handles VEP annotation and plugin management. There are no more manual steps.*
 
 ### Step 3: Query Your Knowledge Graph
 
-Once the pipeline is complete, activate your environment and start the interactive RAG engine.
+Once the pipeline is complete, start the interactive RAG engine.
 ```bash
-conda activate gwas-env
 python query_engine.py
 ```
