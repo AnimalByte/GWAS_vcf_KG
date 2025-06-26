@@ -100,38 +100,50 @@ The core of the system is a Neo4j graph database, populated by a series of modul
 
 ### Step 0: Initial Setup
 
-1.  **Conda Environments:** This project requires two separate conda environments to manage conflicting dependencies between the VEP toolchain and the Python data science libraries.
+1.  **Create Conda Environments:** This project requires two separate conda environments. Run the following commands to create them.
 
-    **Create the `vep-env` for bioinformatics tools:**
     ```bash
+    # Create the environment for the main RAG system and data loaders
+    conda create -n gwas-env python=3.9
+    
+    # Create the environment for the VEP toolchain
     conda create -n vep-env
+    ```
+
+2.  **Install Dependencies:** Install the required packages into each environment.
+
+    **First, set up the `vep-env`:**
+    ```bash
     conda activate vep-env
     conda install -c bioconda ensembl-vep bcftools crossmap
     ```
 
-    **Create the `gwas-env` for the RAG system:**
+    **Next, set up the `gwas-env`:**
     ```bash
-    conda create -n gwas-env python=3.9
     conda activate gwas-env
     pip install -r requirements.txt
     pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
+    # This final command requires system build tools like build-essential and cmake
     CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
     ```
-    *(Note: You will also need system build tools like `build-essential` and `cmake` installed for the `llama-cpp-python` installation).*
 
-2.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches. Run these commands while the `vep-env` is active.
+3.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches. Run these commands **while the `vep-env` is active**.
+
     ```bash
     conda activate vep-env
     
     # Download the main VEP cache for GRCh38
     vep_install -a cf -s homo_sapiens -y GRCh38
 
-    # Download data files for the plugins
+    # **FIXED**: Install the plugin *scripts* first
+    vep_install -a p --PLUGINS Geno2MP,ClinPred
+
+    # **FIXED**: Then install the required *data* for those plugins
     vep_install -a p -p Geno2MP
     vep_install -a p -p ClinPred
     ```
 
-3.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
+4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
     ```bash
     bash clean.sh
     ```
