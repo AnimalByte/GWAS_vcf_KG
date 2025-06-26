@@ -69,78 +69,42 @@ The project is organized into a modular pipeline, with each script performing a 
 
 ---
 
-## Methodology: The Data Pipeline
-
-The pipeline is executed by the `run_pipeline.sh` script, which orchestrates the following steps in order:
-
-#### Pre-processing
-1.  **Filtering for Significance:** The raw GWAS VCF file is first filtered using `bcftools` to retain only genome-wide significant variants (P < 5x10⁻⁸).
-2.  **Genomic Coordinate Harmonization:** The coordinates of the significant variants are converted ("lifted over") from the hg37/GRCh37 assembly to the modern hg38/GRCh38 assembly using `CrossMap`.
-3.  **Functional Annotation:** The harmonized VCF file is annotated using the **Ensembl VEP command-line tool**, which uses several powerful plugins (`Geno2MP`, `ClinPred`) to add rich clinical and functional context.
-
-#### Knowledge Graph Construction
-The core of the system is a Neo4j graph database, populated by a series of modular Python scripts:
-
-4.  **Base Graph Import (`1_neo4j_base_importer.py`):** Creates `:Mutation` and `:Gene` nodes.
-5.  **Ontology Integration (`2_go_importer.py`, `3_hpo_importer.py`):** Imports the Gene Ontology (GO) and Human Phenotype Ontology (HPO).
-6.  **Pathway Integration (`4_reactome_importer.py`):** Adds `:Pathway` nodes from the Reactome database.
-7.  **Clinical Significance (`5_clinvar_importer.py`):** Enriches `:Mutation` nodes with clinical significance data from ClinVar.
-
-#### Unstructured Data Integration
-8.  **Literature Retrieval (`6_pubmed_fetcher.py`):** Fetches relevant scientific abstracts from PubMed for genes in the graph.
-9.  **Knowledge Extraction (`7_ner_importer.py`):** Uses a GPU-accelerated `scispaCy` NER model to identify biomedical entities in abstracts.
-10. **Entity Reconciliation (`8_ner_reconciliation.py`):** Links the unstructured and structured worlds by merging entities.
-
-#### RAG System Preparation
-11. **Vector Embedding (`9_create_embeddings.py`):** Uses a PubMedBERT model to create vector embeddings for all abstracts and stores them in a local ChromaDB database.
-
----
-
 ## How to Run the System
 
 ### Step 0: Initial Setup
 
-1.  **Create Conda Environments:** This project requires two separate conda environments. Run the following commands to create them.
-
+1.  **Conda Environment:** Create a single conda environment for the project.
     ```bash
-    # Create the environment for the main RAG system and data loaders
     conda create -n gwas-env python=3.9
-    
-    # Create the environment for the VEP toolchain
-    conda create -n vep-env
-    ```
-
-2.  **Install Dependencies:** Install the required packages into each environment.
-
-    **First, set up the `vep-env`:**
-    ```bash
-    conda activate vep-env
-    conda install -c bioconda ensembl-vep bcftools crossmap
-    ```
-
-    **Next, set up the `gwas-env`:**
-    ```bash
     conda activate gwas-env
+    ```
+
+2.  **Install Dependencies:** Install all required packages.
+    ```bash
+    # Install command-line bioinformatics tools
+    conda install -c bioconda bcftools crossmap
+
+    # Install Python packages
     pip install -r requirements.txt
     pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
+    
     # This final command requires system build tools like build-essential and cmake
     CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
     ```
 
-3.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches. Run these commands **while the `vep-env` is active**.
-
+3.  **Set up VEP Docker Environment (One-time only):**
+    This involves pulling the VEP Docker image and creating a local directory to store its cache files.
     ```bash
-    conda activate vep-env
-    
-    # Download the main VEP cache for GRCh38
-    vep_install -a cf -s homo_sapiens -y GRCh38
+    # Pull the latest official VEP Docker image
+    docker pull ensemblorg/ensembl-vep:latest
 
-    # **FIXED**: Install the plugin *scripts* first
-    vep_install -a p --PLUGINS Geno2MP,ClinPred
+    # Create a local directory for VEP data
+    mkdir -p ~/.vep
 
-    # **FIXED**: Then install the required *data* for those plugins
-    vep_install -a p -p Geno2MP
-    vep_install -a p -p ClinPred
+    # Run the VEP installer inside the container to download cache and plugin data
+    # This mounts your local .vep directory into the container for persistent storage.
+    docker run -t -i -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
+      INSTALL.pl -a cfp -s homo_sapiens -y GRCh38 --PLUGINS Geno2MP,ClinPred
     ```
 
 4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
@@ -157,14 +121,14 @@ docker-compose up -d neo4j
 
 ### Step 2: Run the Full Data Pipeline
 
-Execute the master script. This will run the entire, fully automated data processing pipeline, including switching between conda environments as needed.
+Execute the master script. This will run the entire, fully automated data processing pipeline.
 ```bash
 bash run_pipeline.sh
 ```
 
 ### Step 3: Query Your Knowledge Graph
 
-Once the pipeline is complete, activate the correct environment and start the interactive RAG engine.
+Once the pipeline is complete, activate your environment and start the interactive RAG engine.
 ```bash
 conda activate gwas-env
 python query_engine.py
