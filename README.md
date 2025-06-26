@@ -100,24 +100,27 @@ The core of the system is a Neo4j graph database, populated by a series of modul
 
 ### Step 0: Initial Setup
 
-1.  **Conda Environment:** Create and activate the `gwas-env` and `vep-env` conda environments.
-    ```bash
-    conda create -n gwas-env python=3.9
-    conda activate gwas-env
-    # Install dependencies for the main pipeline
-    pip install -r requirements.txt
-    pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
-    CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
+1.  **Conda Environments:** This project requires two separate conda environments to manage conflicting dependencies between the VEP toolchain and the Python data science libraries.
 
-    # Create and set up the VEP environment
+    **Create the `vep-env` for bioinformatics tools:**
+    ```bash
     conda create -n vep-env
     conda activate vep-env
     conda install -c bioconda ensembl-vep bcftools crossmap
     ```
 
-2.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches.
+    **Create the `gwas-env` for the RAG system:**
     ```bash
-    # Activate the VEP environment
+    conda create -n gwas-env python=3.9
+    conda activate gwas-env
+    pip install -r requirements.txt
+    pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
+    CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
+    ```
+    *(Note: You will also need system build tools like `build-essential` and `cmake` installed for the `llama-cpp-python` installation).*
+
+2.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches. Run these commands while the `vep-env` is active.
+    ```bash
     conda activate vep-env
     
     # Download the main VEP cache for GRCh38
@@ -142,14 +145,15 @@ docker-compose up -d neo4j
 
 ### Step 2: Run the Full Data Pipeline
 
-Execute the master script. This will run the entire, fully automated data processing pipeline.
+Execute the master script. This will run the entire, fully automated data processing pipeline, including switching between conda environments as needed.
 ```bash
 bash run_pipeline.sh
 ```
 
 ### Step 3: Query Your Knowledge Graph
 
-Once the pipeline is complete, start the interactive RAG engine to ask questions.
+Once the pipeline is complete, activate the correct environment and start the interactive RAG engine.
 ```bash
+conda activate gwas-env
 python query_engine.py
 ```
