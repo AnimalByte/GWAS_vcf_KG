@@ -1,140 +1,154 @@
-# Bio-KG RAG: A Knowledge-Graph-Powered RAG System for GWAS Data
+#!/bin/bash
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/release/python-390/)
+# This script runs the entire data processing and import pipeline in the correct order.
+# It now uses the VEP Docker container for annotation, making the process more robust.
 
-## Abstract
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
-Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (GO, HPO, Reactome, ClinVar) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
+echo "--- Starting Full Data Import and Processing Pipeline ---"
 
----
+# --- Initialize Conda in the script's shell ---
+# This ensures that tools installed in the active environment are found.
+echo "Initializing Conda for this script session..."
+source $(conda info --base)/etc/profile.d/conda.sh
+conda activate gwas-env
 
-## Dataset
+# --- Step 1: Pre-process VCF Data ---
 
-This pipeline was developed and tested using publicly available GWAS summary statistics from the IEU OpenGWAS project.
+echo "[1/11] Filtering for significant variants..."
+bcftools view -i 'FORMAT/LP > 7.3' data/ukb-d-2395_1.vcf.gz -o results/significant_hg37.vcf
 
--   **Trait:** Hair/balding pattern: Pattern 1
--   **IEU OpenGWAS ID:** `ukb-d-2395_1`
--   **Source VCF File:** `ukb-d-2395_1.vcf.gz` (hg37/GRCh37 assembly)
--   **Link:** [https://gwas.mrcieu.ac.uk/datasets/ukb-d-2395_1/](https://gwas.mrcieu.ac.uk/datasets/ukb-d-2395_1/)
+echo "[2/11] Performing LiftOver from hg37 to hg38..."
+# Download prerequisite files for LiftOver if they don't exist
+echo "Downloading prerequisite files for LiftOver (if they don't exist)..."
+wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
+wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz
+# Ensure the files are unzipped. The '|| true' prevents errors if the file is already unzipped.
+gunzip -f downloads/hg19ToHg38.over.chain.gz || true
+gunzip -f downloads/hg38.fa.gz || true
 
----
+# Run CrossMap using the direct path from the conda environment
+echo "Running CrossMap..."
+$CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significant_hg37.vcf downloads/hg38.fa results/gwas_hg38.vcf
 
-## System Architecture
 
-This project implements a GraphRAG architecture composed of three core components:
+# --- Step 2: Annotate with VEP using Docker ---
+echo "[3/11] Annotating with VEP via Docker container..."
 
-1.  **Knowledge Graph (Neo4j):** A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, biological pathways, associated phenotypes from clinical ontologies, and entities extracted from literature. This structured backbone allows for precise, multi-hop queries to uncover complex relationships.
+# Add permission checks for both directories needed by Docker
+echo "Verifying write permissions for the '~/.vep' cache directory..."
+if ! touch "$HOME/.vep/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the VEP cache directory ('~/.vep')."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 ~/.vep"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "$HOME/.vep/permission_test"
+echo "VEP cache permissions are OK."
 
-2.  **Vector Database (ChromaDB):** A vector store containing embeddings of scientific abstracts from PubMed. This component enables fast and efficient **semantic search**, allowing the system to find documents based on conceptual meaning rather than just keywords. Embeddings are generated using a domain-specific PubMedBERT model.
 
-3.  **Query Engine (Local LLM):** A large language model (`Phi-3-medium`) orchestrated by a Python script. It acts as the "brain" of the system, using a Named Entity Recognition (NER) model to understand user queries, retrieving context from both the knowledge graph and the vector database, and synthesizing this information to generate a comprehensive, evidence-based answer.
+echo "Verifying write permissions for the 'results' directory..."
+if ! touch "results/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the './results' directory."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 results"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "results/permission_test"
+echo "Results directory permissions are OK."
 
----
+# This command runs VEP inside its official Docker container.
+# It uses the local cache but allows an internet connection for the GO plugin to fetch its data.
+# The --pick flag has been removed to ensure annotations for the nearest gene are included.
+docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
+    vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
+    --cache \
+    --dir /opt/vep/.vep \
+    --assembly GRCh38 \
+    --fork 12 \
+    --force_overwrite \
+    --tab \
+    --distance 2000 \
+    --symbol \
+    --biotype \
+    --uniprot \
+    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,Gene,GO,SWISSPROT,TREMBL" \
+    --plugin GO
 
-## Project Structure
 
-The project is organized into a modular pipeline, with each script performing a distinct data ingestion or processing task.
+# --- Step 2.5: Troubleshoot VEP Output ---
+echo "[*] Troubleshooting VEP output file..."
+OUTPUT_FILE="results/egIwc7NRt4hou5yo.txt"
 
-```
-/
-├── data/
-│   └── ukb-d-2395_1.vcf.gz         # Original GWAS VCF file (hg37)
-├── models/
-│   └── Phi-3-medium-128k-instruct-Q5_K_M.gguf  # The LLM file
-├── results/                        # Directory for generated output files
-├── downloads/                      # Directory for downloaded prerequisite files
-├── neo4j/
-│   └── data/                       # Neo4j database files (mounted volume)
-│
-├── docker-compose.yml              # Neo4j service configuration
-├── README.md                       # This documentation file
-├── requirements.txt                # A list of all required Python packages
-|
-├── run_pipeline.sh                 # Master script to run the full data pipeline
-├── clean.sh                        # Utility script to clean the directory
-|
-├── 1_neo4j_base_importer.py        # Loads base mutations and genes
-├── 2_go_importer.py                # Loads Gene Ontology data and relationships
-├── 3_hpo_importer.py               # Loads Human Phenotype Ontology data
-├── 4_reactome_importer.py          # Loads Reactome pathways and gene links
-├── 5_clinvar_importer.py           # Loads ClinVar clinical significance data
-├── 6_pubmed_fetcher.py             # Downloads abstracts from PubMed for relevant genes
-├── 7_ner_importer.py               # Extracts entities from abstracts and adds to graph
-├── 8_ner_reconciliation.py         # Reconciles extracted entities with known nodes
-├── 9_create_embeddings.py          # Builds the vector database from abstracts
-|
-└── query_engine.py                 # The final, interactive RAG query engine
-```
+# Check if the file exists and is not empty
+if [ ! -s "$OUTPUT_FILE" ]; then
+    echo "ERROR: VEP output file '$OUTPUT_FILE' is empty or does not exist."
+    exit 1
+fi
 
----
+# Count total lines (excluding the header which starts with ##)
+TOTAL_LINES=$(grep -cv '^##' "$OUTPUT_FILE")
+echo "Total variant annotations found: $TOTAL_LINES"
 
-## How to Run the System
+# Count lines with a valid gene SYMBOL (6th column is not '-')
+# Using awk for robustness with tab-separated files
+SYMBOL_COUNT=$(awk -F'\t' '!/^##/ && $6 != "-" {count++} END {print count+0}' "$OUTPUT_FILE")
+echo "Annotations with a valid Gene Symbol (SYMBOL): $SYMBOL_COUNT"
 
-### Step 0: Initial Setup
+# Count lines with a valid SWISSPROT (10th column) or TREMBL (11th column) entry
+UNIPROT_COUNT=$(awk -F'\t' '!/^##/ && ($10 != "-" || $11 != "-") {count++} END {print count+0}' "$OUTPUT_FILE")
+echo "Annotations with a UniProt ID (SWISSPROT or TREMBL): $UNIPROT_COUNT"
 
-1.  **Conda Environment:** Create and activate a single conda environment for the project.
-    ```bash
-    conda create -n gwas-env python=3.9
-    conda activate gwas-env
-    ```
+# If some symbols were found, print a sample
+if [ "$SYMBOL_COUNT" -gt 0 ]; then
+    echo "--- Sample of annotations WITH a gene symbol ---"
+    awk -F'\t' '!/^##/ && $6 != "-" {print}' "$OUTPUT_FILE" | head -n 5
+    echo "------------------------------------------------"
+else
+    echo "WARNING: No annotations with a valid gene symbol were found."
+fi
 
-2.  **Install Dependencies:** Install all required packages.
-    ```bash
-    # Install command-line bioinformatics tools
-    conda install -c bioconda bcftools crossmap bgzip tabix
 
-    # Install Python packages
-    pip install -r requirements.txt
-    pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
-    
-    # This final command requires system build tools like build-essential and cmake
-    CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
-    ```
+# --- Step 3: Build the Knowledge Graph ---
+echo "[4/11] Building base graph (Mutations and Genes)..."
+python 1_neo4j_base_importer.py
 
-3.  **Set up VEP Docker Environment (One-time only):**
-    Pull the latest VEP Docker image. The pipeline script will handle the rest of the setup.
-    ```bash
-    # Pull the latest official VEP Docker image
-    docker pull ensemblorg/ensembl-vep:latest
-    
-    # Create the directory for VEP cache
-    mkdir -p ~/.vep
-    
-    # Set permissions to allow the Docker container to write to the cache
-    sudo chmod -R 777 ~/.vep
-    ```
+echo "[5/11] Importing Gene Ontology (GO) data..."
+python 2_go_importer.py
 
-4. **Set Directory Permissions:**
-   The pipeline writes to the `results` directory. Ensure it has the correct permissions.
-   ```bash
-   mkdir -p results
-   sudo chmod -R 777 results
-   ```
+echo "[6/11] Importing Human Phenotype Ontology (HPO) data..."
+python 3_hpo_importer.py
 
-5.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
-    ```bash
-    bash clean.sh
-    ```
+echo "[7/11] Importing Reactome Pathway data..."
+python 4_reactome_importer.py
 
-### Step 1: Start the Database Service
+echo "[8/11] Importing ClinVar clinical significance data..."
+python 5_clinvar_importer.py
 
-Start the Neo4j Docker container in the background.
-```bash
-docker-compose up -d neo4j
-```
+# --- Step 4: Enrich Graph and Build Vector DB ---
+echo "[9/11] Fetching PubMed abstracts..."
+python 6_pubmed_fetcher.py
 
-### Step 2: Run the Full Data Pipeline
+echo "[10/11] Extracting entities from abstracts and enriching graph..."
+python 7_ner_importer.py
 
-Execute the master script. This will run the entire, fully automated data processing and annotation pipeline.
-```bash
-bash run_pipeline.sh
-```
-*Note: The script now automatically handles VEP annotation and plugin management. There are no more manual steps.*
+echo "[11/11] Reconciling extracted entities with known graph nodes..."
+python 8_ner_reconciliation.py
 
-### Step 3: Query Your Knowledge Graph
+echo "--- Building Vector Database ---"
+echo "Creating embeddings and storing in ChromaDB..."
+python 9_create_embeddings.py
 
-Once the pipeline is complete, start the interactive RAG engine.
-```bash
-python query_engine.py
-```
+echo "--- Pipeline Complete! ---"
+echo "You can now run 'python query_engine.py' to chat with your knowledge graph."
