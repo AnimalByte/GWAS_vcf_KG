@@ -70,6 +70,7 @@ echo "Results directory permissions are OK."
 
 # This command runs VEP inside its official Docker container.
 # It uses the local cache but allows an internet connection for the GO plugin to fetch its data.
+# The --pick flag has been removed to ensure annotations for the nearest gene are included.
 docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
     vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
     --cache \
@@ -78,13 +79,45 @@ docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblo
     --fork 12 \
     --force_overwrite \
     --tab \
-    --pick \
     --distance 2000 \
     --symbol \
     --biotype \
     --uniprot \
     --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,Gene,GO,SWISSPROT,TREMBL" \
     --plugin GO
+
+
+# --- Step 2.5: Troubleshoot VEP Output ---
+echo "[*] Troubleshooting VEP output file..."
+OUTPUT_FILE="results/egIwc7NRt4hou5yo.txt"
+
+# Check if the file exists and is not empty
+if [ ! -s "$OUTPUT_FILE" ]; then
+    echo "ERROR: VEP output file '$OUTPUT_FILE' is empty or does not exist."
+    exit 1
+fi
+
+# Count total lines (excluding the header which starts with ##)
+TOTAL_LINES=$(grep -cv '^##' "$OUTPUT_FILE")
+echo "Total variant annotations found: $TOTAL_LINES"
+
+# Count lines with a valid gene SYMBOL (6th column is not '-')
+# Using awk for robustness with tab-separated files
+SYMBOL_COUNT=$(awk -F'\t' '!/^##/ && $6 != "-" {count++} END {print count+0}' "$OUTPUT_FILE")
+echo "Annotations with a valid Gene Symbol (SYMBOL): $SYMBOL_COUNT"
+
+# Count lines with a valid SWISSPROT (10th column) or TREMBL (11th column) entry
+UNIPROT_COUNT=$(awk -F'\t' '!/^##/ && ($10 != "-" || $11 != "-") {count++} END {print count+0}' "$OUTPUT_FILE")
+echo "Annotations with a UniProt ID (SWISSPROT or TREMBL): $UNIPROT_COUNT"
+
+# If some symbols were found, print a sample
+if [ "$SYMBOL_COUNT" -gt 0 ]; then
+    echo "--- Sample of annotations WITH a gene symbol ---"
+    awk -F'\t' '!/^##/ && $6 != "-" {print}' "$OUTPUT_FILE" | head -n 5
+    echo "------------------------------------------------"
+else
+    echo "WARNING: No annotations with a valid gene symbol were found."
+fi
 
 
 # --- Step 3: Build the Knowledge Graph ---
