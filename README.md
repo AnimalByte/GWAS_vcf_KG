@@ -76,13 +76,13 @@ The pipeline is executed by the `run_pipeline.sh` script, which orchestrates the
 #### Pre-processing
 1.  **Filtering for Significance:** The raw GWAS VCF file is first filtered using `bcftools` to retain only genome-wide significant variants (P < 5x10⁻⁸).
 2.  **Genomic Coordinate Harmonization:** The coordinates of the significant variants are converted ("lifted over") from the hg37/GRCh37 assembly to the modern hg38/GRCh38 assembly using `CrossMap`.
-3.  **Functional Annotation:** The harmonized VCF file is annotated using the **Ensembl VEP command-line tool** to identify affected genes, predict functional consequences, and retrieve all necessary annotations for the knowledge graph.
+3.  **Functional Annotation:** The harmonized VCF file is annotated using the **Ensembl VEP command-line tool**, which uses several powerful plugins (`Geno2MP`, `ClinPred`) to add rich clinical and functional context.
 
 #### Knowledge Graph Construction
 The core of the system is a Neo4j graph database, populated by a series of modular Python scripts:
 
 4.  **Base Graph Import (`1_neo4j_base_importer.py`):** Creates `:Mutation` and `:Gene` nodes.
-5.  **Ontology Integration (`2_go_importer.py`, `3_hpo_importer.py`):** Imports the Gene Ontology (GO) and Human Phenotype Ontology (HPO), creating `:GO_Term` and `:Phenotype` nodes and their rich hierarchies.
+5.  **Ontology Integration (`2_go_importer.py`, `3_hpo_importer.py`):** Imports the Gene Ontology (GO) and Human Phenotype Ontology (HPO).
 6.  **Pathway Integration (`4_reactome_importer.py`):** Adds `:Pathway` nodes from the Reactome database.
 7.  **Clinical Significance (`5_clinvar_importer.py`):** Enriches `:Mutation` nodes with clinical significance data from ClinVar.
 
@@ -100,31 +100,35 @@ The core of the system is a Neo4j graph database, populated by a series of modul
 
 ### Step 0: Initial Setup
 
-1.  **Conda Environment:** Create and activate the `gwas-env` conda environment.
+1.  **Conda Environment:** Create and activate the `gwas-env` and `vep-env` conda environments.
     ```bash
     conda create -n gwas-env python=3.9
     conda activate gwas-env
-    ```
-
-2.  **Dependencies:** Install all required packages. This includes Python packages via `pip` and command-line bioinformatics tools via `conda`.
-    ```bash
-    # Install Python packages
+    # Install dependencies for the main pipeline
     pip install -r requirements.txt
-    pip install scispacy==0.5.1
-    pip install [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
+    pip install scispacy==0.5.1 [https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz](https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.1/en_core_sci_lg-0.5.1.tar.gz)
     CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
 
-    # Install command-line tools
-    conda install -c bioconda bcftools crossmap ensembl-vep
+    # Create and set up the VEP environment
+    conda create -n vep-env
+    conda activate vep-env
+    conda install -c bioconda ensembl-vep bcftools crossmap
     ```
-    *(Note: You will also need system build tools like `build-essential` and `cmake` installed for the `llama-cpp-python` installation).*
 
-3.  **VEP Cache Setup (One-time only):** The VEP tool needs a local cache of annotation data. Run the installer to download it. This is a large download and only needs to be done once.
+2.  **VEP Cache & Plugin Setup (One-time only):** VEP and its plugins require local data caches.
     ```bash
+    # Activate the VEP environment
+    conda activate vep-env
+    
+    # Download the main VEP cache for GRCh38
     vep_install -a cf -s homo_sapiens -y GRCh38
+
+    # Download data files for the plugins
+    vep_install -a p -p Geno2MP
+    vep_install -a p -p ClinPred
     ```
 
-4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
+3.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
     ```bash
     bash clean.sh
     ```
