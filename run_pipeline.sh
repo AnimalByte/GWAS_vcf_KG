@@ -35,17 +35,52 @@ $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significa
 
 # --- Step 2: Annotate with VEP using Docker ---
 echo "[3/11] Annotating with VEP via Docker container..."
+
+# *** NEW: Add permission checks for both directories needed by Docker ***
+echo "Verifying write permissions for the '~/.vep' cache directory..."
+if ! touch "$HOME/.vep/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the VEP cache directory ('~/.vep')."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 ~/.vep"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "$HOME/.vep/permission_test"
+echo "VEP cache permissions are OK."
+
+
+echo "Verifying write permissions for the 'results' directory..."
+if ! touch "results/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the './results' directory."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 results"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "results/permission_test"
+echo "Results directory permissions are OK."
+
+
 # This command runs VEP inside its official Docker container.
 # -v mounts the local 'results' directory into the container's working directory.
 # -v also mounts the local VEP cache to prevent re-downloading.
 docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
-    vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/annotated_variants.tsv \
+    vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
     --cache --offline --dir /opt/vep/.vep \
     --assembly GRCh38 \
     --fork 12 \
     --force_overwrite \
     --tab \
-    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,Gene,Feature_type,Feature,BIOTYPE,EXON,INTRON,HGVSc,HGVSp,cDNA_position,CDS_position,Protein_position,Amino_acids,Codons,Existing_variation,REF_ALLELE,UPLOADED_ALLELE,DISTANCE,STRAND,FLAGS,SYMBOL_SOURCE,HGNC_ID,CANONICAL,MANE,MANE_SELECT,MANE_PLUS_CLINICAL,TSL>    --plugin Geno2MP \
+    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,GO,SWISSPROT,TREMBL" \
+    --plugin Geno2MP \
     --plugin ClinPred
 
 # --- Step 3: Build the Knowledge Graph ---
@@ -80,3 +115,4 @@ python 9_create_embeddings.py
 
 echo "--- Pipeline Complete! ---"
 echo "You can now run 'python query_engine.py' to chat with your knowledge graph."
+
