@@ -89,12 +89,13 @@ class GraphRAGQueryEngine:
         self._build_entity_maps()
 
     def _build_entity_maps(self):
-        """Fetches all gene, phenotype, disease, and drug names from the graph to create in-memory maps."""
+        """Fetches all gene, phenotype, disease, drug, and GO term names from the graph to create in-memory maps."""
         logging.info("Building in-memory maps for entity resolution...")
         self.phenotype_map = {}
         self.gene_map = {}
         self.pathway_map = {}
         self.drug_map = {}
+        self.go_term_map = {} # *** NEW: Add map for GO terms ***
         
         try:
             with self.neo4j_driver.session() as session:
@@ -123,8 +124,14 @@ class GraphRAGQueryEngine:
                 for record in drug_result:
                     drug_name = record["d.name"]
                     self.drug_map[drug_name.lower()] = drug_name
+                
+                # *** NEW: Fetch GO Terms ***
+                go_result = session.run("MATCH (go:GO_Term) WHERE go.name IS NOT NULL RETURN go.name")
+                for record in go_result:
+                    go_name = record["go.name"]
+                    self.go_term_map[go_name.lower()] = go_name
 
-            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, and {len(self.drug_map)} drugs.")
+            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, {len(self.drug_map)} drugs, and {len(self.go_term_map)} GO terms.")
         except Exception as e:
             logging.error(f"Failed to build entity maps: {e}")
 
@@ -156,7 +163,6 @@ class GraphRAGQueryEngine:
                         gene_symbol = self.gene_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Gene: {gene_symbol}")
                         
-                        # *** UPDATED: Gene query now also fetches Gene Ontology terms ***
                         context_query = """
                         MATCH (g:Gene {symbol: $symbol})
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
@@ -177,7 +183,7 @@ class GraphRAGQueryEngine:
                             if result.get('pathways'): full_context += f"  - Associated Pathways: {', '.join(flatten_and_unique(result['pathways'])[:3])}\n"
                             if result.get('phenotypes'): full_context += f"  - Associated Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
                             if result.get('drugs'): full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
-                            if result.get('go_terms'): full_context += f"  - GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:3])}\n"
+                            if result.get('go_terms'): full_context += f"  - GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:5])}\n"
 
 
                     elif entity_text in self.phenotype_map:
@@ -186,34 +192,102 @@ class GraphRAGQueryEngine:
                         phenotype_name = phenotype_data['name']
                         phenotype_type = phenotype_data['type']
                         logging.info(f"Resolved '{entity_text}' as {phenotype_type}: {phenotype_name}")
-                        context_query = "MATCH (p {name: $name})<-[*]-(g:Gene) RETURN collect(DISTINCT g.symbol)[..10] as genes"
+                        
+                        context_query = """
+                        MATCH (p {name: $name})<-[:ASSOCIATED_WITH]-(g:Gene)
+                        WITH g LIMIT 10
+                        OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
+                        OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        RETURN collect(DISTINCT g.symbol) as genes, 
+                               collect(DISTINCT go.name)[..5] as go_terms,
+                               collect(DISTINCT path.name)[..5] as pathways,
+                               collect(DISTINCT d.name)[..5] as drugs
+                        """
                         result = session.run(context_query, name=phenotype_name).single()
                         if result:
                             full_context += f"\nEntity: {phenotype_name} (Type: {phenotype_type})\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
+                            if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
+                            if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
+                            if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+
                     
                     elif entity_text in self.pathway_map:
                         found_specific_entity = True
                         pathway_name = self.pathway_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Pathway: {pathway_name}")
-                        context_query = "MATCH (p:Pathway {name: $name})<-[:PARTICIPATES_IN]-(g:Gene) RETURN collect(DISTINCT g.symbol)[..10] as genes"
+                        
+                        context_query = """
+                        MATCH (p:Pathway {name: $name})<-[:PARTICIPATES_IN]-(g:Gene)
+                        WITH g LIMIT 10
+                        OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
+                        OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        RETURN collect(DISTINCT g.symbol) as genes, 
+                               collect(DISTINCT go.name)[..5] as go_terms,
+                               collect(DISTINCT pheno.name)[..5] as phenotypes,
+                               collect(DISTINCT d.name)[..5] as drugs
+                        """
                         result = session.run(context_query, name=pathway_name).single()
                         if result:
                             full_context += f"\nEntity: {pathway_name} (Type: Pathway)\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
+                            if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
+                            if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
+                            if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+
                     
                     elif entity_text in self.drug_map:
                         found_specific_entity = True
                         drug_name = self.drug_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Drug: {drug_name}")
+                        
                         context_query = """
                         MATCH (d:Drug {name: $drug_name})-[:INTERACTS_WITH]->(g:Gene)
-                        RETURN d.name as name, 'Drug' as type, collect(DISTINCT g.symbol)[..10] as targeted_genes
+                        WITH g LIMIT 10
+                        OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
+                        OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
+                        RETURN d.name as name, 'Drug' as type, 
+                               collect(DISTINCT g.symbol) as targeted_genes, 
+                               collect(DISTINCT go.name)[..5] as go_terms,
+                               collect(DISTINCT path.name)[..5] as pathways,
+                               collect(DISTINCT pheno.name)[..5] as phenotypes
                         """
                         result = session.run(context_query, drug_name=drug_name).single()
                         if result:
                             full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
                             if result.get('targeted_genes'): full_context += f"  - Targeted Genes: {', '.join(result['targeted_genes'])}\n"
+                            if result.get('go_terms'): full_context += f"  - Functions of Targeted Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
+                            if result.get('pathways'): full_context += f"  - Pathways of Targeted Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
+                            if result.get('phenotypes'): full_context += f"  - Phenotypes of Targeted Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
+
+                    # *** NEW: Logic to resolve and query for GO terms ***
+                    elif entity_text in self.go_term_map:
+                        found_specific_entity = True
+                        go_name = self.go_term_map[entity_text]
+                        logging.info(f"Resolved '{entity_text}' as GO Term: {go_name}")
+                        
+                        context_query = """
+                        MATCH (go:GO_Term {name: $go_name})<-[:HAS_GO_TERM]-(g:Gene)
+                        WITH g LIMIT 10
+                        OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
+                        OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
+                        OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        RETURN go.name as name, 'GO_Term' as type,
+                               collect(DISTINCT g.symbol) as genes,
+                               collect(DISTINCT p.name)[..5] as pathways,
+                               collect(DISTINCT h.name)[..5] as phenotypes,
+                               collect(DISTINCT d.name)[..5] as drugs
+                        """
+                        result = session.run(context_query, go_name=go_name).single()
+                        if result:
+                            full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
+                            if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
+                            if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
+                            if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
+                            if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
 
 
         # If NER finds no specific, resolvable entities, fall back to the discovery query
