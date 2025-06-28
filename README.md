@@ -5,7 +5,7 @@
 
 ## Abstract
 
-Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (GO, HPO, Reactome, ClinVar) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
+Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (GO, HPO, Reactome, ClinVar, DGIdb) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
 
 ---
 
@@ -24,7 +24,7 @@ This pipeline was developed and tested using publicly available GWAS summary sta
 
 This project implements a GraphRAG architecture composed of three core components:
 
-1.  **Knowledge Graph (Neo4j):** A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, biological pathways, associated phenotypes from clinical ontologies, and entities extracted from literature. This structured backbone allows for precise, multi-hop queries to uncover complex relationships.
+1.  **Knowledge Graph (Neo4j):** A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, biological pathways, associated phenotypes, known drug-gene interactions from the Drug-Gene Interaction Database (DGIdb), and entities extracted from literature. This structured backbone allows for precise, multi-hop queries to uncover complex relationships.
 
 2.  **Vector Database (ChromaDB):** A vector store containing embeddings of scientific abstracts from PubMed. This component enables fast and efficient **semantic search**, allowing the system to find documents based on conceptual meaning rather than just keywords. Embeddings are generated using a domain-specific PubMedBERT model.
 
@@ -63,6 +63,7 @@ The project is organized into a modular pipeline, with each script performing a 
 ├── 7_ner_importer.py               # Extracts entities from abstracts and adds to graph
 ├── 8_ner_reconciliation.py         # Reconciles extracted entities with known nodes
 ├── 9_create_embeddings.py          # Builds the vector database from abstracts
+├── 10_dgidb_importer.py            # Loads drug-gene interaction data from DGIdb
 |
 └── query_engine.py                 # The final, interactive RAG query engine
 ```
