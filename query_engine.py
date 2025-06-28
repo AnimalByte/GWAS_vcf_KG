@@ -95,7 +95,7 @@ class GraphRAGQueryEngine:
         self.gene_map = {}
         self.pathway_map = {}
         self.drug_map = {}
-        self.go_term_map = {} # *** NEW: Add map for GO terms ***
+        self.go_term_map = {} 
         
         try:
             with self.neo4j_driver.session() as session:
@@ -125,7 +125,7 @@ class GraphRAGQueryEngine:
                     drug_name = record["d.name"]
                     self.drug_map[drug_name.lower()] = drug_name
                 
-                # *** NEW: Fetch GO Terms ***
+                # Fetch GO Terms
                 go_result = session.run("MATCH (go:GO_Term) WHERE go.name IS NOT NULL RETURN go.name")
                 for record in go_result:
                     go_name = record["go.name"]
@@ -262,8 +262,7 @@ class GraphRAGQueryEngine:
                             if result.get('go_terms'): full_context += f"  - Functions of Targeted Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('pathways'): full_context += f"  - Pathways of Targeted Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Targeted Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
-
-                    # *** NEW: Logic to resolve and query for GO terms ***
+                    
                     elif entity_text in self.go_term_map:
                         found_specific_entity = True
                         go_name = self.go_term_map[entity_text]
@@ -294,6 +293,7 @@ class GraphRAGQueryEngine:
         if not found_specific_entity:
             logging.info("No specific entities resolved. Running discovery query...")
             with self.neo4j_driver.session() as session:
+                # *** FULLY UPGRADED: Discovery query now fetches all relevant context ***
                 discovery_query = """
                 MATCH (m:Mutation)-[:AFFECTS]->(g:Gene)
                 WHERE m.impact = 'HIGH' OR m.impact = 'MODERATE'
@@ -301,9 +301,13 @@ class GraphRAGQueryEngine:
                 ORDER BY mutation_count DESC LIMIT 5
                 OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
                 OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
+                OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
                 RETURN g.symbol AS gene, 
                        collect(DISTINCT p.name) AS pathways, 
-                       collect(DISTINCT h.name) AS phenotypes
+                       collect(DISTINCT h.name) AS phenotypes,
+                       collect(DISTINCT go.name) AS go_terms,
+                       collect(DISTINCT d.name) AS drugs
                 """
                 result = session.run(discovery_query)
                 records = list(result)
@@ -313,6 +317,8 @@ class GraphRAGQueryEngine:
                         full_context += f"- Gene: {record['gene']}\n"
                         if record['pathways']: full_context += f"  - Pathways: {', '.join(flatten_and_unique(record['pathways'])[:3])}\n"
                         if record['phenotypes']: full_context += f"  - Phenotypes: {', '.join(flatten_and_unique(record['phenotypes'])[:3])}\n"
+                        if record['go_terms']: full_context += f"  - GO Functions: {', '.join(flatten_and_unique(record['go_terms'])[:3])}\n"
+                        if record['drugs']: full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(record['drugs'])[:3])}\n"
 
         if full_context:
             graph_context = full_context.strip()
