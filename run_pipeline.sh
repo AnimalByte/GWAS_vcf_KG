@@ -8,6 +8,14 @@ set -e
 
 echo "--- Starting Full Data Import and Processing Pipeline ---"
 
+# --- Step 0: Setup Directories ---
+echo "[0/12] Creating project directories if they do not exist..."
+mkdir -p data
+mkdir -p models
+mkdir -p results
+mkdir -p downloads
+mkdir -p neo4j/data
+
 # --- Initialize Conda in the script's shell ---
 # This ensures that tools installed in the active environment are found.
 echo "Initializing Conda for this script session..."
@@ -16,10 +24,10 @@ conda activate gwas-env
 
 # --- Step 1: Pre-process VCF Data ---
 
-echo "[1/11] Filtering for significant variants..."
+echo "[1/12] Filtering for significant variants..."
 bcftools view -i 'FORMAT/LP > 7.3' data/ukb-d-2395_1.vcf.gz -o results/significant_hg37.vcf
 
-echo "[2/11] Performing LiftOver from hg37 to hg38..."
+echo "[2/12] Performing LiftOver from hg37 to hg38..."
 # Download prerequisite files for LiftOver if they don't exist
 echo "Downloading prerequisite files for LiftOver (if they don't exist)..."
 wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
@@ -34,9 +42,9 @@ $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significa
 
 
 # --- Step 2: Annotate with VEP using Docker ---
-echo "[3/11] Annotating with VEP via Docker container..."
+echo "[3/12] Annotating with VEP via Docker container..."
 
-# Add permission checks for both directories needed by Docker
+# Add permission checks for directories needed by Docker
 echo "Verifying write permissions for the '~/.vep' cache directory..."
 if ! touch "$HOME/.vep/permission_test" 2>/dev/null; then
     echo "------------------------------------------------------------------"
@@ -68,8 +76,23 @@ fi
 rm "results/permission_test"
 echo "Results directory permissions are OK."
 
+echo "Verifying write permissions for the 'neo4j/data' directory..."
+if ! touch "neo4j/data/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the './neo4j/data' directory."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 neo4j/data"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "neo4j/data/permission_test"
+echo "Neo4j data directory permissions are OK."
+
+
 # This command runs VEP inside its official Docker container.
-# It uses the local cache but allows an internet connection for the GO plugin to fetch its data.
 # The --pick flag has been removed to ensure annotations for the nearest gene are included.
 docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
     vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
@@ -87,63 +110,33 @@ docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblo
     --plugin GO
 
 
-# --- Step 2.5: Troubleshoot VEP Output ---
-echo "[*] Troubleshooting VEP output file..."
-OUTPUT_FILE="results/egIwc7NRt4hou5yo.txt"
-
-# Check if the file exists and is not empty
-if [ ! -s "$OUTPUT_FILE" ]; then
-    echo "ERROR: VEP output file '$OUTPUT_FILE' is empty or does not exist."
-    exit 1
-fi
-
-# Count total lines (excluding the header which starts with ##)
-TOTAL_LINES=$(grep -cv '^##' "$OUTPUT_FILE")
-echo "Total variant annotations found: $TOTAL_LINES"
-
-# Count lines with a valid gene SYMBOL (6th column is not '-')
-# Using awk for robustness with tab-separated files
-SYMBOL_COUNT=$(awk -F'\t' '!/^##/ && $6 != "-" {count++} END {print count+0}' "$OUTPUT_FILE")
-echo "Annotations with a valid Gene Symbol (SYMBOL): $SYMBOL_COUNT"
-
-# Count lines with a valid SWISSPROT (10th column) or TREMBL (11th column) entry
-UNIPROT_COUNT=$(awk -F'\t' '!/^##/ && ($10 != "-" || $11 != "-") {count++} END {print count+0}' "$OUTPUT_FILE")
-echo "Annotations with a UniProt ID (SWISSPROT or TREMBL): $UNIPROT_COUNT"
-
-# If some symbols were found, print a sample
-if [ "$SYMBOL_COUNT" -gt 0 ]; then
-    echo "--- Sample of annotations WITH a gene symbol ---"
-    awk -F'\t' '!/^##/ && $6 != "-" {print}' "$OUTPUT_FILE" | head -n 5
-    echo "------------------------------------------------"
-else
-    echo "WARNING: No annotations with a valid gene symbol were found."
-fi
-
-
 # --- Step 3: Build the Knowledge Graph ---
-echo "[4/11] Building base graph (Mutations and Genes)..."
+echo "[4/12] Building base graph (Mutations and Genes)..."
 python 1_neo4j_base_importer.py
 
-echo "[5/11] Importing Gene Ontology (GO) data..."
+echo "[5/12] Importing Gene Ontology (GO) data..."
 python 2_go_importer.py
 
-echo "[6/11] Importing Human Phenotype Ontology (HPO) data..."
+echo "[6/12] Importing Human Phenotype Ontology (HPO) data..."
 python 3_hpo_importer.py
 
-echo "[7/11] Importing Reactome Pathway data..."
+echo "[7/12] Importing Reactome Pathway data..."
 python 4_reactome_importer.py
 
-echo "[8/11] Importing ClinVar clinical significance data..."
+echo "[8/12] Importing ClinVar clinical significance data..."
 python 5_clinvar_importer.py
 
+echo "[9/12] Importing DGIdb drug-gene interaction data..."
+python 10_dgidb_importer.py
+
 # --- Step 4: Enrich Graph and Build Vector DB ---
-echo "[9/11] Fetching PubMed abstracts..."
+echo "[10/12] Fetching PubMed abstracts..."
 python 6_pubmed_fetcher.py
 
-echo "[10/11] Extracting entities from abstracts and enriching graph..."
+echo "[11/12] Extracting entities from abstracts and enriching graph..."
 python 7_ner_importer.py
 
-echo "[11/11] Reconciling extracted entities with known graph nodes..."
+echo "[12/12] Reconciling extracted entities with known graph nodes..."
 python 8_ner_reconciliation.py
 
 echo "--- Building Vector Database ---"
