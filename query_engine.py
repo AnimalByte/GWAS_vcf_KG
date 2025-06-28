@@ -141,12 +141,40 @@ class GraphRAGQueryEngine:
 
     def retrieve_context(self, question):
         """
-        The main retrieval function. It uses NER to identify entities, resolves them against
-        the graph, queries for context, and then performs an expanded vector search.
+        The main retrieval function. It uses NER and a keyword-based fallback to identify entities, 
+        resolves them against the graph, queries for context, and then performs an expanded vector search.
         """
+        # --- Primary Method: NER with spaCy ---
         doc = self.nlp(question)
         entities = [{"text": ent.text.lower(), "label": ent.label_} for ent in doc.ents]
         logging.info(f"NER found potential entities: {entities}")
+
+        # --- Fallback Method: Keyword Matching ---
+        # If NER doesn't find a specific entity we can resolve, we'll try keyword matching.
+        found_by_ner = any(
+            ent['text'] in self.gene_map or
+            ent['text'] in self.phenotype_map or
+            ent['text'] in self.pathway_map or
+            ent['text'] in self.drug_map or
+            ent['text'] in self.go_term_map
+            for ent in entities
+        )
+
+        if not found_by_ner:
+            logging.info("NER did not resolve specific entities, trying keyword search as fallback.")
+            keyword_entities = []
+            lower_question = question.lower()
+            # Check for matches in our entity maps
+            for entity_map in [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map]:
+                for key in entity_map:
+                    # Use regex to match whole words only, avoiding partial matches
+                    if re.search(r'\b' + re.escape(key) + r'\b', lower_question):
+                        keyword_entities.append({"text": key, "label": "KEYWORD"})
+            
+            if keyword_entities:
+                logging.info(f"Keyword search found potential entities: {keyword_entities}")
+                entities.extend(keyword_entities)
+
 
         graph_context = "No relevant data found in the graph."
         full_context = ""
@@ -184,7 +212,7 @@ class GraphRAGQueryEngine:
                             if result.get('phenotypes'): full_context += f"  - Associated Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
                             if result.get('drugs'): full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
                             if result.get('go_terms'): full_context += f"  - GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:5])}\n"
-
+                        break 
 
                     elif entity_text in self.phenotype_map:
                         found_specific_entity = True
@@ -211,8 +239,8 @@ class GraphRAGQueryEngine:
                             if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                        break 
 
-                    
                     elif entity_text in self.pathway_map:
                         found_specific_entity = True
                         pathway_name = self.pathway_map[entity_text]
@@ -236,16 +264,17 @@ class GraphRAGQueryEngine:
                             if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                        break
 
-                    
                     elif entity_text in self.drug_map:
                         found_specific_entity = True
                         drug_name = self.drug_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Drug: {drug_name}")
                         
+                        # *** CORRECTION: Carry the 'd' variable through the WITH clause ***
                         context_query = """
                         MATCH (d:Drug {name: $drug_name})-[:INTERACTS_WITH]->(g:Gene)
-                        WITH g LIMIT 10
+                        WITH d, g LIMIT 10
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
@@ -262,6 +291,7 @@ class GraphRAGQueryEngine:
                             if result.get('go_terms'): full_context += f"  - Functions of Targeted Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('pathways'): full_context += f"  - Pathways of Targeted Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Targeted Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
+                        break
                     
                     elif entity_text in self.go_term_map:
                         found_specific_entity = True
@@ -287,13 +317,12 @@ class GraphRAGQueryEngine:
                             if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                        break
 
-
-        # If NER finds no specific, resolvable entities, fall back to the discovery query
+        # If no specific entities were resolved by NER or keywords, run the discovery query
         if not found_specific_entity:
             logging.info("No specific entities resolved. Running discovery query...")
             with self.neo4j_driver.session() as session:
-                # *** FULLY UPGRADED: Discovery query now fetches all relevant context ***
                 discovery_query = """
                 MATCH (m:Mutation)-[:AFFECTS]->(g:Gene)
                 WHERE m.impact = 'HIGH' OR m.impact = 'MODERATE'
