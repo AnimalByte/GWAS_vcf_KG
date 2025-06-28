@@ -89,11 +89,13 @@ class GraphRAGQueryEngine:
         self._build_entity_maps()
 
     def _build_entity_maps(self):
-        """Fetches all gene, phenotype, and disease names from the graph to create an in-memory map."""
+        """Fetches all gene, phenotype, disease, and drug names from the graph to create in-memory maps."""
         logging.info("Building in-memory maps for entity resolution...")
         self.phenotype_map = {}
         self.gene_map = {}
         self.pathway_map = {}
+        self.drug_map = {}
+        
         try:
             with self.neo4j_driver.session() as session:
                 # Fetch Phenotypes and Diseases
@@ -116,7 +118,13 @@ class GraphRAGQueryEngine:
                     pathway_name = record["p.name"]
                     self.pathway_map[pathway_name.lower()] = pathway_name
 
-            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, and {len(self.pathway_map)} pathways.")
+                # Fetch Drugs
+                drug_result = session.run("MATCH (d:Drug) WHERE d.name IS NOT NULL RETURN d.name")
+                for record in drug_result:
+                    drug_name = record["d.name"]
+                    self.drug_map[drug_name.lower()] = drug_name
+
+            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, and {len(self.drug_map)} drugs.")
         except Exception as e:
             logging.error(f"Failed to build entity maps: {e}")
 
@@ -139,7 +147,6 @@ class GraphRAGQueryEngine:
 
         if entities:
             with self.neo4j_driver.session() as session:
-                # **UPGRADED**: Loop through all found entities and build a context for each resolved one.
                 for entity in entities:
                     entity_text = entity['text']
                     
@@ -148,14 +155,20 @@ class GraphRAGQueryEngine:
                         found_specific_entity = True
                         gene_symbol = self.gene_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Gene: {gene_symbol}")
+                        
+                        # *** UPDATED: Gene query now also fetches Gene Ontology terms ***
                         context_query = """
                         MATCH (g:Gene {symbol: $symbol})
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                         OPTIONAL MATCH (g)<-[:AFFECTS]-(m:Mutation)
+                        OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         RETURN g.symbol AS name, 'Gene' AS type, 
                                collect(DISTINCT p.name) as pathways,
                                collect(DISTINCT h.name) as phenotypes,
+                               collect(DISTINCT d.name) as drugs,
+                               collect(DISTINCT go.name) as go_terms,
                                collect(DISTINCT {id: m.id, significance: m.clinical_significance})[..5] as mutations
                         """
                         result = session.run(context_query, symbol=gene_symbol).single()
@@ -163,6 +176,9 @@ class GraphRAGQueryEngine:
                             full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
                             if result.get('pathways'): full_context += f"  - Associated Pathways: {', '.join(flatten_and_unique(result['pathways'])[:3])}\n"
                             if result.get('phenotypes'): full_context += f"  - Associated Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
+                            if result.get('drugs'): full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
+                            if result.get('go_terms'): full_context += f"  - GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:3])}\n"
+
 
                     elif entity_text in self.phenotype_map:
                         found_specific_entity = True
@@ -173,7 +189,7 @@ class GraphRAGQueryEngine:
                         context_query = "MATCH (p {name: $name})<-[*]-(g:Gene) RETURN collect(DISTINCT g.symbol)[..10] as genes"
                         result = session.run(context_query, name=phenotype_name).single()
                         if result:
-                            full_context += f"Entity: {phenotype_name} (Type: {phenotype_type})\n"
+                            full_context += f"\nEntity: {phenotype_name} (Type: {phenotype_type})\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
                     
                     elif entity_text in self.pathway_map:
@@ -183,8 +199,21 @@ class GraphRAGQueryEngine:
                         context_query = "MATCH (p:Pathway {name: $name})<-[:PARTICIPATES_IN]-(g:Gene) RETURN collect(DISTINCT g.symbol)[..10] as genes"
                         result = session.run(context_query, name=pathway_name).single()
                         if result:
-                            full_context += f"Entity: {pathway_name} (Type: Pathway)\n"
+                            full_context += f"\nEntity: {pathway_name} (Type: Pathway)\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
+                    
+                    elif entity_text in self.drug_map:
+                        found_specific_entity = True
+                        drug_name = self.drug_map[entity_text]
+                        logging.info(f"Resolved '{entity_text}' as Drug: {drug_name}")
+                        context_query = """
+                        MATCH (d:Drug {name: $drug_name})-[:INTERACTS_WITH]->(g:Gene)
+                        RETURN d.name as name, 'Drug' as type, collect(DISTINCT g.symbol)[..10] as targeted_genes
+                        """
+                        result = session.run(context_query, drug_name=drug_name).single()
+                        if result:
+                            full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
+                            if result.get('targeted_genes'): full_context += f"  - Targeted Genes: {', '.join(result['targeted_genes'])}\n"
 
 
         # If NER finds no specific, resolvable entities, fall back to the discovery query
@@ -261,7 +290,7 @@ if __name__ == "__main__":
     engine = GraphRAGQueryEngine()
     
     print("\n--- Bio-KG RAG System (Final Engine) ---")
-    print("Ask a question about a gene, phenotype, or pathway (e.g., 'What genes are associated with Alopecia?') or type 'exit' to quit.")
+    print("Ask a question about a gene, phenotype, pathway, or drug (e.g., 'What drugs target AR?') or type 'exit' to quit.")
     while True:
         user_question = input("> ")
         if user_question.lower() == 'exit':
