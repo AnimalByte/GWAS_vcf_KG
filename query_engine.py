@@ -89,13 +89,14 @@ class GraphRAGQueryEngine:
         self._build_entity_maps()
 
     def _build_entity_maps(self):
-        """Fetches all gene, phenotype, disease, drug, and GO term names from the graph to create in-memory maps."""
+        """Fetches all gene, phenotype, disease, drug, GO term, and variant names from the graph to create in-memory maps."""
         logging.info("Building in-memory maps for entity resolution...")
         self.phenotype_map = {}
         self.gene_map = {}
         self.pathway_map = {}
         self.drug_map = {}
-        self.go_term_map = {} 
+        self.go_term_map = {}
+        self.variant_map = {} # *** NEW: Add map for variants ***
         
         try:
             with self.neo4j_driver.session() as session:
@@ -130,8 +131,14 @@ class GraphRAGQueryEngine:
                 for record in go_result:
                     go_name = record["go.name"]
                     self.go_term_map[go_name.lower()] = go_name
+                
+                # *** NEW: Fetch Variants ***
+                variant_result = session.run("MATCH (v:Mutation) WHERE v.id STARTS WITH 'rs' RETURN v.id")
+                for record in variant_result:
+                    variant_id = record["v.id"]
+                    self.variant_map[variant_id.lower()] = variant_id
 
-            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, {len(self.drug_map)} drugs, and {len(self.go_term_map)} GO terms.")
+            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, {len(self.drug_map)} drugs, {len(self.go_term_map)} GO terms, and {len(self.variant_map)} variants.")
         except Exception as e:
             logging.error(f"Failed to build entity maps: {e}")
 
@@ -150,13 +157,13 @@ class GraphRAGQueryEngine:
         logging.info(f"NER found potential entities: {entities}")
 
         # --- Fallback Method: Keyword Matching ---
-        # If NER doesn't find a specific entity we can resolve, we'll try keyword matching.
         found_by_ner = any(
             ent['text'] in self.gene_map or
             ent['text'] in self.phenotype_map or
             ent['text'] in self.pathway_map or
             ent['text'] in self.drug_map or
-            ent['text'] in self.go_term_map
+            ent['text'] in self.go_term_map or
+            ent['text'] in self.variant_map
             for ent in entities
         )
 
@@ -165,9 +172,9 @@ class GraphRAGQueryEngine:
             keyword_entities = []
             lower_question = question.lower()
             # Check for matches in our entity maps
-            for entity_map in [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map]:
+            all_maps = [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map, self.variant_map]
+            for entity_map in all_maps:
                 for key in entity_map:
-                    # Use regex to match whole words only, avoiding partial matches
                     if re.search(r'\b' + re.escape(key) + r'\b', lower_question):
                         keyword_entities.append({"text": key, "label": "KEYWORD"})
             
@@ -186,7 +193,36 @@ class GraphRAGQueryEngine:
                     entity_text = entity['text']
                     
                     # --- Resolve against our in-memory maps ---
-                    if entity_text in self.gene_map:
+                    # *** NEW: Logic to handle variant queries first ***
+                    if entity_text in self.variant_map:
+                        found_specific_entity = True
+                        variant_id = self.variant_map[entity_text]
+                        logging.info(f"Resolved '{entity_text}' as Variant: {variant_id}")
+                        
+                        context_query = """
+                        MATCH (v:Mutation {id: $variant_id})-[:AFFECTS]->(g:Gene)
+                        WITH v, g LIMIT 1
+                        OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
+                        OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
+                        OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        RETURN v.id as name, 'Variant' as type, g.symbol as gene_symbol,
+                               collect(DISTINCT p.name) as pathways,
+                               collect(DISTINCT h.name) as phenotypes,
+                               collect(DISTINCT d.name) as drugs,
+                               collect(DISTINCT go.name) as go_terms
+                        """
+                        result = session.run(context_query, variant_id=variant_id).single()
+                        if result:
+                            full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
+                            if result.get('gene_symbol'): full_context += f"  - Affects Gene: {result['gene_symbol']}\n"
+                            if result.get('pathways'): full_context += f"  - Gene Pathways: {', '.join(flatten_and_unique(result['pathways'])[:3])}\n"
+                            if result.get('phenotypes'): full_context += f"  - Gene Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
+                            if result.get('drugs'): full_context += f"  - Gene Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
+                            if result.get('go_terms'): full_context += f"  - Gene GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:5])}\n"
+                        break
+                        
+                    elif entity_text in self.gene_map:
                         found_specific_entity = True
                         gene_symbol = self.gene_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Gene: {gene_symbol}")
@@ -271,7 +307,6 @@ class GraphRAGQueryEngine:
                         drug_name = self.drug_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Drug: {drug_name}")
                         
-                        # *** CORRECTION: Carry the 'd' variable through the WITH clause ***
                         context_query = """
                         MATCH (d:Drug {name: $drug_name})-[:INTERACTS_WITH]->(g:Gene)
                         WITH d, g LIMIT 10
@@ -399,7 +434,7 @@ if __name__ == "__main__":
     engine = GraphRAGQueryEngine()
     
     print("\n--- Bio-KG RAG System (Final Engine) ---")
-    print("Ask a question about a gene, phenotype, pathway, or drug (e.g., 'What drugs target AR?') or type 'exit' to quit.")
+    print("Ask a question about a gene, phenotype, pathway, drug, or variant (e.g., 'What is the function of rs6152?') or type 'exit' to quit.")
     while True:
         user_question = input("> ")
         if user_question.lower() == 'exit':
