@@ -96,7 +96,7 @@ class GraphRAGQueryEngine:
         self.pathway_map = {}
         self.drug_map = {}
         self.go_term_map = {}
-        self.variant_map = {} # *** NEW: Add map for variants ***
+        self.variant_map = {}
         
         try:
             with self.neo4j_driver.session() as session:
@@ -132,7 +132,7 @@ class GraphRAGQueryEngine:
                     go_name = record["go.name"]
                     self.go_term_map[go_name.lower()] = go_name
                 
-                # *** NEW: Fetch Variants ***
+                # Fetch Variants
                 variant_result = session.run("MATCH (v:Mutation) WHERE v.id STARTS WITH 'rs' RETURN v.id")
                 for record in variant_result:
                     variant_id = record["v.id"]
@@ -175,6 +175,7 @@ class GraphRAGQueryEngine:
             all_maps = [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map, self.variant_map]
             for entity_map in all_maps:
                 for key in entity_map:
+                    # Use regex to match whole words only, avoiding partial matches
                     if re.search(r'\b' + re.escape(key) + r'\b', lower_question):
                         keyword_entities.append({"text": key, "label": "KEYWORD"})
             
@@ -193,7 +194,6 @@ class GraphRAGQueryEngine:
                     entity_text = entity['text']
                     
                     # --- Resolve against our in-memory maps ---
-                    # *** NEW: Logic to handle variant queries first ***
                     if entity_text in self.variant_map:
                         found_specific_entity = True
                         variant_id = self.variant_map[entity_text]
@@ -259,7 +259,7 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (p {name: $name})<-[:ASSOCIATED_WITH]-(g:Gene)
-                        WITH g LIMIT 10
+                        WITH g LIMIT 15
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
@@ -284,7 +284,7 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (p:Pathway {name: $name})<-[:PARTICIPATES_IN]-(g:Gene)
-                        WITH g LIMIT 10
+                        WITH g LIMIT 15
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
@@ -309,7 +309,7 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (d:Drug {name: $drug_name})-[:INTERACTS_WITH]->(g:Gene)
-                        WITH d, g LIMIT 10
+                        WITH d, g LIMIT 15
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
@@ -335,7 +335,7 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (go:GO_Term {name: $go_name})<-[:HAS_GO_TERM]-(g:Gene)
-                        WITH g LIMIT 10
+                        WITH g LIMIT 15
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
@@ -407,11 +407,17 @@ class GraphRAGQueryEngine:
         """Main RAG pipeline to answer a user's question."""
         logging.info(f"Received question: {question}")
         graph_context, vector_context = self.retrieve_context(question)
+        
+        # *** NEW, more sophisticated prompt ***
         prompt = f"""
-        [INST] You are a helpful biomedical research assistant.
-        Your task is to answer the following question based *only* on the context provided.
-        Synthesize the information from the structured 'Graph Context' and the unstructured 'Vector Context' from PubMed abstracts.
-        Be concise and cite the PubMed IDs (PMID) of any abstracts you use in your answer.
+        [INST] You are an expert biomedical research assistant. Your goal is to provide a clear and factual answer based *only* on the provided context.
+
+        Please synthesize a coherent biological narrative that answers the user's question. Start by directly addressing the main point of the question. Then, explain the biological mechanisms, integrating facts from both the 'Graph Context' and 'Vector Context'.
+
+        IMPORTANT:
+        - Do NOT make logical leaps. For example, if a gene is associated with a list of drugs, simply state that. Do NOT assume those drugs are treatments for the phenotype in the question unless the context explicitly states so.
+        - List supplementary facts (like associated drugs or unrelated phenotypes) separately under a heading like "Additional Context" to avoid confusion.
+        - Be concise and cite the PubMed IDs (PMID) for any claims derived from the 'Vector Context'.
 
         **Graph Context (Structured Data):**
         {graph_context}
@@ -423,7 +429,7 @@ class GraphRAGQueryEngine:
         {question} [/INST]
         """
         logging.info("Generating answer with LLM...")
-        response = self.llm(prompt, max_tokens=512, stream=True)
+        response = self.llm(prompt, max_tokens=1024, stream=True)
         
         print("--- Answer ---")
         for chunk in response:

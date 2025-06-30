@@ -3,6 +3,7 @@ import time
 import logging
 from neo4j import GraphDatabase
 from Bio import Entrez, Medline
+from datetime import datetime, timedelta
 
 # --- Configuration ---
 # Sets up logging to monitor the script's progress.
@@ -14,9 +15,10 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 # NCBI Entrez API configuration
-# It's polite to tell NCBI who you are
-Entrez.email = "dannysoriano89@gmail.com"  # Please change this to your email
+Entrez.email = "your_email@example.com"  # Please change this to your email
 MAX_PAPERS_PER_GENE = 15  # Max number of abstracts to download per gene
+SEARCH_YEARS_PRIMARY = 7 # *** The primary, most recent search window ***
+SEARCH_YEARS_FALLBACK = 15 # *** The fallback window if no recent results are found ***
 
 # Directory to save the downloaded abstracts
 OUTPUT_DIR = "pubmed_abstracts"
@@ -36,25 +38,44 @@ def get_genes_from_neo4j(driver):
         logging.error(f"Failed to query genes from Neo4j: {e}")
         return []
 
+def search_pubmed(gene_symbol, years):
+    """Performs a PubMed search for a given gene and time window."""
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=years * 365)
+    start_date_str = start_date.strftime("%Y/%m/%d")
+    end_date_str = end_date.strftime("%Y/%m/%d")
+    
+    search_term = (
+        f'({gene_symbol}[Gene Name] OR "{gene_symbol}"[All Fields]) AND '
+        f'"human"[Organism] AND hasabstract[Filter] AND '
+        f'("{start_date_str}"[Date - Publication] : "{end_date_str}"[Date - Publication])'
+    )
+    
+    logging.info(f"Searching PubMed for '{gene_symbol}' within the last {years} years...")
+    handle = Entrez.esearch(db="pubmed", term=search_term, retmax=MAX_PAPERS_PER_GENE)
+    record = Entrez.read(handle)
+    handle.close()
+    return record["IdList"]
+
 def fetch_pubmed_abstracts(gene_symbol):
     """
     Searches PubMed for a given gene symbol and downloads abstracts.
+    It first tries a 7-year window and falls back to a 15-year window if needed.
     """
-    # This search term is robust, looking for the official gene name or the symbol in any field.
-    search_term = f'({gene_symbol}[Gene Name] OR "{gene_symbol}"[All Fields]) AND "human"[Organism] AND hasabstract[Filter]'
-    logging.info(f"Searching PubMed for gene '{gene_symbol}'...")
-    
     try:
-        # Search PubMed for article IDs (PMIDs)
-        handle = Entrez.esearch(db="pubmed", term=search_term, retmax=MAX_PAPERS_PER_GENE)
-        record = Entrez.read(handle)
-        handle.close()
-        pmids = record["IdList"]
+        # --- Primary search attempt (last 7 years) ---
+        pmids = search_pubmed(gene_symbol, SEARCH_YEARS_PRIMARY)
 
-        logging.info(f"Found {len(pmids)} PMIDs for '{gene_symbol}'.")
+        # --- Fallback search attempt (last 15 years) ---
+        if not pmids:
+            logging.warning(f"No results found for '{gene_symbol}' in the last {SEARCH_YEARS_PRIMARY} years. Expanding search to {SEARCH_YEARS_FALLBACK} years.")
+            pmids = search_pubmed(gene_symbol, SEARCH_YEARS_FALLBACK)
 
         if not pmids:
+            logging.info(f"No results found for '{gene_symbol}' even in the last {SEARCH_YEARS_FALLBACK} years. Skipping.")
             return
+
+        logging.info(f"Found {len(pmids)} PMIDs for '{gene_symbol}'.")
 
         # Fetch the actual records for the found PMIDs
         handle = Entrez.efetch(db="pubmed", id=pmids, rettype="medline", retmode="text")
