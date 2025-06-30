@@ -64,7 +64,7 @@ The project is organized into a modular pipeline, with each script performing a 
 ├── 9_create_embeddings.py          # Builds the vector database from abstracts
 ├── 10_dgidb_importer.py            # Loads drug-gene interaction data from DGIdb
 ├── 11_ppi_importer.py              # Loads protein-protein interactions from STRING-DB
-├── 12_encode_importer.py           # Loads regulatory elements from ENCODE
+├── 12_encode_importer.py           # Loads regulatory elements and cell-type data from ENCODE
 |
 └── query_engine.py                 # The final, interactive RAG query engine
 ```
@@ -94,7 +94,15 @@ The project is organized into a modular pipeline, with each script performing a 
     CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
     ```
 
-3.  **Set up VEP Docker Environment & Permissions:**
+3.  **Manual Data Downloads:** Before running the pipeline, you must manually download two files:
+    * **GWAS VCF File:** Download the source `ukb-d-2395_1.vcf.gz` file and place it in the `data/` directory.
+        * **Link:** [https://gwas.mrcieu.ac.uk/datasets/ukb-d-2395_1/](https://gwas.mrcieu.ac.uk/datasets/ukb-d-2395_1/)
+    * **ENCODE Cell-Type Specificity Data:** Download the DNase-Z-score matrix from the SCREEN portal:
+        * **URL:** [https://screen.encodeproject.org/downloads](https://screen.encodeproject.org/downloads)
+        * **File:** Find the "Human (GRCh38/hg38)" section and download the file listed as "DNase Z-score matrix". It will have a filename like `ENCFF833CSA.txt.gz`.
+        * Place this file directly into the `downloads/` directory.
+
+4.  **Set up VEP Docker Environment & Permissions:**
     Pull the latest VEP Docker image and set the necessary directory permissions.
     ```bash
     docker pull ensemblorg/ensembl-vep:latest
@@ -102,7 +110,7 @@ The project is organized into a modular pipeline, with each script performing a 
     sudo chmod -R 777 ~/.vep results neo4j/data
     ```
 
-4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
+5.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
     ```bash
     bash clean.sh
     ```
@@ -120,7 +128,7 @@ Execute the master script. This will run the entire, fully automated data proces
 ```bash
 bash run_pipeline.sh
 ```
-*Note: The script now automatically handles all data downloads and processing steps. There are no manual interventions required.*
+*Note: The script now automatically handles all data downloads and processing steps, aside from the two manual downloads listed above.*
 
 ### Step 3: Query Your Knowledge Graph
 
