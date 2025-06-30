@@ -9,7 +9,7 @@ set -e
 echo "--- Starting Full Data Import and Processing Pipeline ---"
 
 # --- Step 0: Setup Directories ---
-echo "[0/14] Creating project directories if they do not exist..."
+echo "[0/15] Creating project directories if they do not exist..."
 mkdir -p data
 mkdir -p models
 mkdir -p results
@@ -24,10 +24,10 @@ conda activate gwas-env
 
 # --- Step 1: Pre-process VCF Data ---
 
-echo "[1/14] Filtering for significant variants..."
+echo "[1/15] Filtering for significant variants..."
 bcftools view -i 'FORMAT/LP > 7.3' data/ukb-d-2395_1.vcf.gz -o results/significant_hg37.vcf
 
-echo "[2/14] Performing LiftOver from hg37 to hg38..."
+echo "[2/15] Performing LiftOver from hg37 to hg38..."
 # Download prerequisite files for LiftOver if they don't exist
 echo "Downloading prerequisite files for LiftOver..."
 wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
@@ -42,7 +42,7 @@ $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significa
 
 
 # --- Step 2: Annotate with VEP using Docker ---
-echo "[3/14] Annotating with VEP via Docker container..."
+echo "[3/15] Annotating with VEP via Docker container..."
 
 # Add permission checks for directories needed by Docker
 echo "Verifying write permissions for the '~/.vep' cache directory..."
@@ -111,38 +111,41 @@ docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblo
 
 
 # --- Step 3: Knowledge Graph Construction ---
-echo "[4/14] Building base graph (Mutations -> Genes)..."
+echo "[4/15] Building base graph (Mutations -> Genes)..."
 python 1_neo4j_base_importer.py
 
-echo "[5/14] Importing Gene Ontology (GO) to link genes to biological processes..."
+echo "[5/15] Importing GWAS study context..."
+python 1.5_gwas_context_importer.py
+
+echo "[6/15] Importing Gene Ontology (GO) to link genes to biological processes..."
 python 2_go_importer.py
 
-echo "[6/14] Importing Human Phenotype Ontology (HPO) to link genes to phenotypes..."
+echo "[7/15] Importing Human Phenotype Ontology (HPO) to link genes to phenotypes..."
 python 3_hpo_importer.py
 
-echo "[7/14] Importing Reactome pathways to link genes to biological pathways..."
+echo "[8/15] Importing Reactome pathways to link genes to biological pathways..."
 python 4_reactome_importer.py
 
-echo "[8/14] Importing ClinVar data to link variants to clinical significance..."
+echo "[9/15] Importing ClinVar data to link variants to clinical significance..."
 python 5_clinvar_importer.py
 
-echo "[9/14] Importing DGIdb drug-gene interaction data..."
+echo "[10/15] Importing DGIdb drug-gene interaction data..."
 python 10_dgidb_importer.py
 
-echo "[10/14] Importing STRING-DB protein-protein interaction data..."
+echo "[11/15] Importing STRING-DB protein-protein interaction data..."
 python 11_ppi_importer.py
 
-echo "[11/14] Importing ENCODE regulatory element data..."
+echo "[12/15] Importing ENCODE regulatory element data..."
 python 12_encode_importer.py
 
 # --- Step 4: Unstructured Data Enrichment and Vector DB Construction ---
-echo "[12/14] Fetching PubMed abstracts for contextually relevant genes..."
+echo "[13/15] Fetching PubMed abstracts for contextually relevant genes..."
 python 6_pubmed_fetcher.py
 
-echo "[13/14] Extracting entities (NER) from abstracts and adding to the graph..."
+echo "[14/15] Extracting entities (NER) from abstracts and adding to the graph..."
 python 7_ner_importer.py
 
-echo "[14/14] Reconciling extracted entities with known graph nodes..."
+echo "[15/15] Reconciling extracted entities with known graph nodes..."
 python 8_ner_reconciliation.py
 
 echo "--- Building Vector Database ---"
