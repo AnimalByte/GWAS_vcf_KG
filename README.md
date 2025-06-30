@@ -53,6 +53,7 @@ The project is organized into a modular pipeline, with each script performing a 
 ├── clean.sh                        # Utility script to clean the directory
 |
 ├── 1_neo4j_base_importer.py        # Loads base mutations and genes
+├── 1.5_gwas_context_importer.py    # Adds GWAS study metadata to the graph
 ├── 2_go_importer.py                # Loads Gene Ontology data and relationships
 ├── 3_hpo_importer.py               # Loads Human Phenotype Ontology data
 ├── 4_reactome_importer.py          # Loads Reactome pathways and gene links
