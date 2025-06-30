@@ -97,6 +97,7 @@ class GraphRAGQueryEngine:
         self.drug_map = {}
         self.go_term_map = {}
         self.variant_map = {}
+        self.regulatory_element_map = {}
         
         try:
             with self.neo4j_driver.session() as session:
@@ -138,7 +139,13 @@ class GraphRAGQueryEngine:
                     variant_id = record["v.id"]
                     self.variant_map[variant_id.lower()] = variant_id
 
-            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, {len(self.drug_map)} drugs, {len(self.go_term_map)} GO terms, and {len(self.variant_map)} variants.")
+                # Fetch Regulatory Elements
+                regulatory_element_result = session.run("MATCH (re:RegulatoryElement) WHERE re.accession IS NOT NULL RETURN re.accession")
+                for record in regulatory_element_result:
+                    accession = record["re.accession"]
+                    self.regulatory_element_map[accession.lower()] = accession
+
+            logging.info(f"Built maps with {len(self.phenotype_map)} phenotypes/diseases, {len(self.gene_map)} genes, {len(self.pathway_map)} pathways, {len(self.drug_map)} drugs, {len(self.go_term_map)} GO terms, {len(self.variant_map)} variants, and {len(self.regulatory_element_map)} regulatory elements.")
         except Exception as e:
             logging.error(f"Failed to build entity maps: {e}")
 
@@ -163,7 +170,8 @@ class GraphRAGQueryEngine:
             ent['text'] in self.pathway_map or
             ent['text'] in self.drug_map or
             ent['text'] in self.go_term_map or
-            ent['text'] in self.variant_map
+            ent['text'] in self.variant_map or
+            ent['text'] in self.regulatory_element_map
             for ent in entities
         )
 
@@ -172,7 +180,7 @@ class GraphRAGQueryEngine:
             keyword_entities = []
             lower_question = question.lower()
             # Check for matches in our entity maps
-            all_maps = [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map, self.variant_map]
+            all_maps = [self.gene_map, self.phenotype_map, self.pathway_map, self.drug_map, self.go_term_map, self.variant_map, self.regulatory_element_map]
             for entity_map in all_maps:
                 for key in entity_map:
                     # Use regex to match whole words only, avoiding partial matches
@@ -199,6 +207,7 @@ class GraphRAGQueryEngine:
                         variant_id = self.variant_map[entity_text]
                         logging.info(f"Resolved '{entity_text}' as Variant: {variant_id}")
                         
+                        # Primary query for direct links
                         context_query = """
                         MATCH (v:Mutation {id: $variant_id})-[:AFFECTS]->(g:Gene)
                         WITH v, g LIMIT 1
@@ -206,13 +215,40 @@ class GraphRAGQueryEngine:
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        OPTIONAL MATCH (v)-[:IN_REGULATORY_ELEMENT]->(re:RegulatoryElement)
                         RETURN v.id as name, 'Variant' as type, g.symbol as gene_symbol,
                                collect(DISTINCT p.name) as pathways,
                                collect(DISTINCT h.name) as phenotypes,
                                collect(DISTINCT d.name) as drugs,
-                               collect(DISTINCT go.name) as go_terms
+                               collect(DISTINCT go.name) as go_terms,
+                               collect(DISTINCT re.accession) as regulatory_elements
                         """
                         result = session.run(context_query, variant_id=variant_id).single()
+
+                        # Fallback query if no direct link is found
+                        if not result:
+                            logging.info(f"No direct gene link for {variant_id}. Trying fallback query via regulatory elements.")
+                            fallback_query = """
+                            MATCH (v:Mutation {id: $variant_id})-[:IN_REGulatory_ELEMENT]->(re:RegulatoryElement)
+                            WITH v, re LIMIT 5
+                            MATCH (re)<-[:IN_REGULATORY_ELEMENT]-(m2:Mutation)-[:AFFECTS]->(g:Gene)
+                            WITH v, re, g, count(m2) as other_variants_in_re
+                            ORDER BY other_variants_in_re DESC
+                            LIMIT 1
+                            
+                            OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
+                            OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
+                            OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                            OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                            RETURN v.id as name, 'Variant' as type, g.symbol as gene_symbol,
+                                   collect(DISTINCT p.name) as pathways,
+                                   collect(DISTINCT h.name) as phenotypes,
+                                   collect(DISTINCT d.name) as drugs,
+                                   collect(DISTINCT go.name) as go_terms,
+                                   collect(DISTINCT re.accession) as regulatory_elements
+                            """
+                            result = session.run(fallback_query, variant_id=variant_id).single()
+
                         if result:
                             full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
                             if result.get('gene_symbol'): full_context += f"  - Affects Gene: {result['gene_symbol']}\n"
@@ -220,6 +256,7 @@ class GraphRAGQueryEngine:
                             if result.get('phenotypes'): full_context += f"  - Gene Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
                             if result.get('drugs'): full_context += f"  - Gene Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
                             if result.get('go_terms'): full_context += f"  - Gene GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:5])}\n"
+                            if result.get('regulatory_elements'): full_context += f"  - In Regulatory Element: {', '.join(flatten_and_unique(result['regulatory_elements']))}\n"
                         break
                         
                     elif entity_text in self.gene_map:
@@ -232,13 +269,17 @@ class GraphRAGQueryEngine:
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                         OPTIONAL MATCH (g)<-[:AFFECTS]-(m:Mutation)
+                        OPTIONAL MATCH (m)-[:IN_REGULATORY_ELEMENT]->(re:RegulatoryElement)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
+                        OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
                         RETURN g.symbol AS name, 'Gene' AS type, 
                                collect(DISTINCT p.name) as pathways,
                                collect(DISTINCT h.name) as phenotypes,
                                collect(DISTINCT d.name) as drugs,
                                collect(DISTINCT go.name) as go_terms,
+                               collect(DISTINCT g2.symbol) as interacting_genes,
+                               collect(DISTINCT re.accession) as regulatory_elements,
                                collect(DISTINCT {id: m.id, significance: m.clinical_significance})[..5] as mutations
                         """
                         result = session.run(context_query, symbol=gene_symbol).single()
@@ -248,6 +289,8 @@ class GraphRAGQueryEngine:
                             if result.get('phenotypes'): full_context += f"  - Associated Phenotypes: {', '.join(flatten_and_unique(result['phenotypes'])[:3])}\n"
                             if result.get('drugs'): full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(result['drugs'])[:5])}\n"
                             if result.get('go_terms'): full_context += f"  - GO Functions/Processes: {', '.join(flatten_and_unique(result['go_terms'])[:5])}\n"
+                            if result.get('interacting_genes'): full_context += f"  - Interacts With (PPI): {', '.join(flatten_and_unique(result['interacting_genes'])[:5])}\n"
+                            if result.get('regulatory_elements'): full_context += f"  - Associated Regulatory Elements: {', '.join(flatten_and_unique(result['regulatory_elements'])[:5])}\n"
                         break 
 
                     elif entity_text in self.phenotype_map:
@@ -259,22 +302,26 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (p {name: $name})<-[:ASSOCIATED_WITH]-(g:Gene)
-                        WITH g LIMIT 15
+                        WITH g, p LIMIT 15
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
-                        RETURN collect(DISTINCT g.symbol) as genes, 
+                        OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
+                        RETURN p.name as name, labels(p)[0] as type,
+                               collect(DISTINCT g.symbol) as genes, 
                                collect(DISTINCT go.name)[..5] as go_terms,
                                collect(DISTINCT path.name)[..5] as pathways,
-                               collect(DISTINCT d.name)[..5] as drugs
+                               collect(DISTINCT d.name)[..5] as drugs,
+                               collect(DISTINCT g2.symbol)[..10] as interacting_genes
                         """
                         result = session.run(context_query, name=phenotype_name).single()
                         if result:
-                            full_context += f"\nEntity: {phenotype_name} (Type: {phenotype_type})\n"
+                            full_context += f"\nEntity: {result['name']} (Type: {result['type']})\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
                             if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                            if result.get('interacting_genes'): full_context += f"  - Associated Gene Interactions (PPI): {', '.join(flatten_and_unique(result['interacting_genes']))}\n"
                         break 
 
                     elif entity_text in self.pathway_map:
@@ -284,22 +331,26 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (p:Pathway {name: $name})<-[:PARTICIPATES_IN]-(g:Gene)
-                        WITH g LIMIT 15
+                        WITH g, p LIMIT 15
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
-                        RETURN collect(DISTINCT g.symbol) as genes, 
+                        OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
+                        RETURN p.name as name,
+                               collect(DISTINCT g.symbol) as genes, 
                                collect(DISTINCT go.name)[..5] as go_terms,
                                collect(DISTINCT pheno.name)[..5] as phenotypes,
-                               collect(DISTINCT d.name)[..5] as drugs
+                               collect(DISTINCT d.name)[..5] as drugs,
+                               collect(DISTINCT g2.symbol)[..10] as interacting_genes
                         """
                         result = session.run(context_query, name=pathway_name).single()
                         if result:
-                            full_context += f"\nEntity: {pathway_name} (Type: Pathway)\n"
+                            full_context += f"\nEntity: {result['name']} (Type: Pathway)\n"
                             if result.get('genes'): full_context += f"  - Associated Genes: {', '.join(result['genes'])}\n"
                             if result.get('go_terms'): full_context += f"  - Functions of Associated Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                            if result.get('interacting_genes'): full_context += f"  - Associated Gene Interactions (PPI): {', '.join(flatten_and_unique(result['interacting_genes']))}\n"
                         break
 
                     elif entity_text in self.drug_map:
@@ -313,11 +364,13 @@ class GraphRAGQueryEngine:
                         OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(path:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(pheno:Phenotype)
+                        OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
                         RETURN d.name as name, 'Drug' as type, 
                                collect(DISTINCT g.symbol) as targeted_genes, 
                                collect(DISTINCT go.name)[..5] as go_terms,
                                collect(DISTINCT path.name)[..5] as pathways,
-                               collect(DISTINCT pheno.name)[..5] as phenotypes
+                               collect(DISTINCT pheno.name)[..5] as phenotypes,
+                               collect(DISTINCT g2.symbol)[..5] as interacting_genes
                         """
                         result = session.run(context_query, drug_name=drug_name).single()
                         if result:
@@ -326,6 +379,7 @@ class GraphRAGQueryEngine:
                             if result.get('go_terms'): full_context += f"  - Functions of Targeted Genes (GO): {', '.join(flatten_and_unique(result['go_terms']))}\n"
                             if result.get('pathways'): full_context += f"  - Pathways of Targeted Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Targeted Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
+                            if result.get('interacting_genes'): full_context += f"  - Target Gene Interactions (PPI): {', '.join(flatten_and_unique(result['interacting_genes']))}\n"
                         break
                     
                     elif entity_text in self.go_term_map:
@@ -335,15 +389,17 @@ class GraphRAGQueryEngine:
                         
                         context_query = """
                         MATCH (go:GO_Term {name: $go_name})<-[:HAS_GO_TERM]-(g:Gene)
-                        WITH g LIMIT 15
+                        WITH g, go LIMIT 15
                         OPTIONAL MATCH (g)-[:PARTICIPATES_IN]->(p:Pathway)
                         OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                         OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                        OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
                         RETURN go.name as name, 'GO_Term' as type,
                                collect(DISTINCT g.symbol) as genes,
                                collect(DISTINCT p.name)[..5] as pathways,
                                collect(DISTINCT h.name)[..5] as phenotypes,
-                               collect(DISTINCT d.name)[..5] as drugs
+                               collect(DISTINCT d.name)[..5] as drugs,
+                               collect(DISTINCT g2.symbol)[..10] as interacting_genes
                         """
                         result = session.run(context_query, go_name=go_name).single()
                         if result:
@@ -352,12 +408,44 @@ class GraphRAGQueryEngine:
                             if result.get('pathways'): full_context += f"  - Pathways of Associated Genes: {', '.join(flatten_and_unique(result['pathways']))}\n"
                             if result.get('phenotypes'): full_context += f"  - Phenotypes of Associated Genes: {', '.join(flatten_and_unique(result['phenotypes']))}\n"
                             if result.get('drugs'): full_context += f"  - Drugs Targeting Associated Genes: {', '.join(flatten_and_unique(result['drugs']))}\n"
+                            if result.get('interacting_genes'): full_context += f"  - Associated Gene Interactions (PPI): {', '.join(flatten_and_unique(result['interacting_genes']))}\n"
+                        break
+                    
+                    elif entity_text in self.regulatory_element_map:
+                        found_specific_entity = True
+                        accession = self.regulatory_element_map[entity_text]
+                        logging.info(f"Resolved '{entity_text}' as Regulatory Element: {accession}")
+                        
+                        context_query = """
+                        MATCH (re:RegulatoryElement {accession: $accession})
+                        OPTIONAL MATCH (re)<-[:IN_REGULATORY_ELEMENT]-(m:Mutation)-[:AFFECTS]->(g:Gene)
+                        RETURN re.accession as name, 'Regulatory Element' as type, re.label as label,
+                               collect(DISTINCT m.id)[..5] as variants,
+                               collect(DISTINCT g.symbol)[..5] as genes
+                        """
+                        result = session.run(context_query, accession=accession).single()
+                        if result:
+                            full_context += f"\nEntity: {result['name']} (Type: {result['type']}, Label: {result['label']})\n"
+                            if result.get('variants'): full_context += f"  - Variants in this element: {', '.join(result['variants'])}\n"
+                            if result.get('genes'): full_context += f"  - Nearby Genes: {', '.join(result['genes'])}\n"
                         break
 
-        # If no specific entities were resolved by NER or keywords, run the discovery query
+        # If no specific entities were resolved, run the discovery queries.
         if not found_specific_entity:
-            logging.info("No specific entities resolved. Running discovery query...")
+            logging.info("No specific entities resolved. Pre-pending study context and running discovery query...")
             with self.neo4j_driver.session() as session:
+                # First, get the overall study context.
+                study_context_query = """
+                MATCH (s:GWAS_Study)
+                RETURN s.trait as trait, s.ieu_id as ieu_id
+                LIMIT 1
+                """
+                study_result = session.run(study_context_query).single()
+                if study_result and study_result['trait']:
+                    full_context += f"This knowledge graph is built from a GWAS study on '{study_result['trait']}' (ID: {study_result['ieu_id']}).\n"
+                    full_context += "Based on this context, here are the most impactful genes and their associations:\n"
+
+                # Now, run the discovery query for top genes.
                 discovery_query = """
                 MATCH (m:Mutation)-[:AFFECTS]->(g:Gene)
                 WHERE m.impact = 'HIGH' OR m.impact = 'MODERATE'
@@ -367,22 +455,27 @@ class GraphRAGQueryEngine:
                 OPTIONAL MATCH (g)-[:ASSOCIATED_WITH]->(h:Phenotype)
                 OPTIONAL MATCH (g)-[:HAS_GO_TERM]->(go:GO_Term)
                 OPTIONAL MATCH (g)<-[:INTERACTS_WITH]-(d:Drug)
+                OPTIONAL MATCH (g)-[:INTERACTS_WITH]-(g2:Gene)
+                OPTIONAL MATCH (g)<-[:AFFECTS]-(mut:Mutation)-[:IN_REGULATORY_ELEMENT]->(re:RegulatoryElement)
                 RETURN g.symbol AS gene, 
                        collect(DISTINCT p.name) AS pathways, 
                        collect(DISTINCT h.name) AS phenotypes,
                        collect(DISTINCT go.name) AS go_terms,
-                       collect(DISTINCT d.name) AS drugs
+                       collect(DISTINCT d.name) AS drugs,
+                       collect(DISTINCT g2.symbol)[..5] as interacting_genes,
+                       collect(DISTINCT re.accession)[..5] as regulatory_elements
                 """
                 result = session.run(discovery_query)
                 records = list(result)
                 if records:
-                    full_context = "Top impactful genes from the dataset and their key associations:\n"
                     for record in records:
                         full_context += f"- Gene: {record['gene']}\n"
                         if record['pathways']: full_context += f"  - Pathways: {', '.join(flatten_and_unique(record['pathways'])[:3])}\n"
                         if record['phenotypes']: full_context += f"  - Phenotypes: {', '.join(flatten_and_unique(record['phenotypes'])[:3])}\n"
                         if record['go_terms']: full_context += f"  - GO Functions: {', '.join(flatten_and_unique(record['go_terms'])[:3])}\n"
                         if record['drugs']: full_context += f"  - Targeted by Drugs: {', '.join(flatten_and_unique(record['drugs'])[:3])}\n"
+                        if record['interacting_genes']: full_context += f"  - Interacts With (PPI): {', '.join(flatten_and_unique(record['interacting_genes']))}\n"
+                        if record['regulatory_elements']: full_context += f"  - Associated Regulatory Elements: {', '.join(flatten_and_unique(record['regulatory_elements']))}\n"
 
         if full_context:
             graph_context = full_context.strip()
