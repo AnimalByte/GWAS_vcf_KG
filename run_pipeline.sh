@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script runs the entire data processing and import pipeline in the correct order.
-# It now includes all data sources, including ENCODE regulatory elements.
+# It now uses the VEP Docker container for annotation, making the process more robust.
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
@@ -28,10 +28,15 @@ echo "[1/14] Filtering for significant variants..."
 bcftools view -i 'FORMAT/LP > 7.3' data/ukb-d-2395_1.vcf.gz -o results/significant_hg37.vcf
 
 echo "[2/14] Performing LiftOver from hg37 to hg38..."
+# Download prerequisite files for LiftOver if they don't exist
+echo "Downloading prerequisite files for LiftOver..."
 wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg19/liftOver/hg19ToHg38.over.chain.gz
 wget -nc -P downloads/ http://hgdownload.soe.ucsc.edu/goldenpath/hg38/bigZips/hg38.fa.gz
+# Ensure the files are unzipped. The '|| true' prevents errors if the file is already unzipped.
 gunzip -f downloads/hg19ToHg38.over.chain.gz || true
 gunzip -f downloads/hg38.fa.gz || true
+
+# Run CrossMap using the direct path from the conda environment
 echo "Running CrossMap..."
 $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significant_hg37.vcf downloads/hg38.fa results/gwas_hg38.vcf
 
@@ -39,13 +44,56 @@ $CONDA_PREFIX/bin/CrossMap vcf downloads/hg19ToHg38.over.chain results/significa
 # --- Step 2: Annotate with VEP using Docker ---
 echo "[3/14] Annotating with VEP via Docker container..."
 
-# Permission checks for Docker
-echo "Verifying write permissions for critical directories..."
-sudo chmod -R 777 ~/.vep results neo4j/data
-echo "Permissions set."
+# Add permission checks for directories needed by Docker
+echo "Verifying write permissions for the '~/.vep' cache directory..."
+if ! touch "$HOME/.vep/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the VEP cache directory ('~/.vep')."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 ~/.vep"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "$HOME/.vep/permission_test"
+echo "VEP cache permissions are OK."
+
+
+echo "Verifying write permissions for the 'results' directory..."
+if ! touch "results/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the './results' directory."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 results"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "results/permission_test"
+echo "Results directory permissions are OK."
+
+echo "Verifying write permissions for the 'neo4j/data' directory..."
+if ! touch "neo4j/data/permission_test" 2>/dev/null; then
+    echo "------------------------------------------------------------------"
+    echo "ERROR: Permission denied."
+    echo "The script cannot write to the './neo4j/data' directory."
+    echo "Please run the following command to fix the permissions, then"
+    echo "re-run this script:"
+    echo
+    echo "sudo chmod -R 777 neo4j/data"
+    echo "------------------------------------------------------------------"
+    exit 1
+fi
+rm "neo4j/data/permission_test"
+echo "Neo4j data directory permissions are OK."
 
 
 # This command runs VEP inside its official Docker container.
+# The --pick flag has been removed to ensure annotations for the nearest gene are included.
 docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblorg/ensembl-vep \
     vep -i /opt/vep/data/gwas_hg38.vcf -o /opt/vep/data/egIwc7NRt4hou5yo.txt \
     --cache \
@@ -58,7 +106,7 @@ docker run --rm -v $(pwd)/results:/opt/vep/data -v ~/.vep:/opt/vep/.vep ensemblo
     --symbol \
     --biotype \
     --uniprot \
-    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,Gene,GO,SWISSPROT,TREMBL,CHROM,POS" \
+    --fields "Uploaded_variation,Location,Allele,Consequence,IMPACT,SYMBOL,REF_ALLELE,Gene,GO,SWISSPROT,TREMBL" \
     --plugin GO
 
 
@@ -84,7 +132,7 @@ python 10_dgidb_importer.py
 echo "[10/14] Importing STRING-DB protein-protein interaction data..."
 python 11_ppi_importer.py
 
-echo "[11/14] Importing ENCODE regulatory element data and linking to variants..."
+echo "[11/14] Importing ENCODE regulatory element data..."
 python 12_encode_importer.py
 
 # --- Step 4: Unstructured Data Enrichment and Vector DB Construction ---
