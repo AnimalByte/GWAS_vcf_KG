@@ -5,7 +5,7 @@
 
 ## Abstract
 
-Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (GO, HPO, Reactome, ClinVar, DGIdb) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
+Genome-Wide Association Studies (GWAS) are instrumental in identifying genetic variants associated with complex traits and diseases. However, a significant challenge lies in interpreting these findings to understand the underlying biological mechanisms. This project presents a complete, reproducible pipeline for constructing a multi-layered biomedical knowledge graph from raw GWAS summary statistics and leveraging it within a sophisticated Retrieval-Augmented Generation (RAG) system. By integrating structured ontological data (Gene Ontology, HPO, Reactome), clinical significance (ClinVar), protein-protein interactions (STRING-DB), regulatory elements (ENCODE), and drug-gene interactions (DGIdb) with unstructured knowledge extracted from scientific literature (PubMed), this system allows researchers to ask complex, natural language questions and receive synthesized, evidence-based answers, thereby bridging the gap between statistical genetic findings and actionable biological insight.
 
 ---
 
@@ -24,11 +24,9 @@ This pipeline was developed and tested using publicly available GWAS summary sta
 
 This project implements a GraphRAG architecture composed of three core components:
 
-1.  **Knowledge Graph (Neo4j):** A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, biological pathways, associated phenotypes, known drug-gene interactions from the Drug-Gene Interaction Database (DGIdb), and entities extracted from literature. This structured backbone allows for precise, multi-hop queries to uncover complex relationships.
-
-2.  **Vector Database (ChromaDB):** A vector store containing embeddings of scientific abstracts from PubMed. This component enables fast and efficient **semantic search**, allowing the system to find documents based on conceptual meaning rather than just keywords. Embeddings are generated using a domain-specific PubMedBERT model.
-
-3.  **Query Engine (Local LLM):** A large language model (`Phi-3-medium`) orchestrated by a Python script. It acts as the "brain" of the system, using a Named Entity Recognition (NER) model to understand user queries, retrieving context from both the knowledge graph and the vector database, and synthesizing this information to generate a comprehensive, evidence-based answer.
+1.  **Knowledge Graph (Neo4j):** A graph database that stores structured, interconnected data. This includes GWAS variants, their affected genes, protein-protein interactions, biological pathways, associated phenotypes, known drug targets, regulatory elements, and entities extracted from literature.
+2.  **Vector Database (ChromaDB):** A vector store containing embeddings of scientific abstracts from PubMed, enabling fast semantic search.
+3.  **Query Engine (Local LLM):** A `Phi-3-medium` language model orchestrated by a Python script that uses a biomedical NER model to understand queries, retrieves context from both the knowledge graph and the vector database, and synthesizes this information to generate a comprehensive, evidence-based answer.
 
 ---
 
@@ -41,7 +39,7 @@ The project is organized into a modular pipeline, with each script performing a 
 ├── data/
 │   └── ukb-d-2395_1.vcf.gz         # Original GWAS VCF file (hg37)
 ├── models/
-│   └── Phi-3-medium-128k-instruct-Q5_K_M.gguf  # The LLM file
+│   └── Phi-3-medium-128k-instruct-Q6_K_L.gguf  # The LLM file
 ├── results/                        # Directory for generated output files
 ├── downloads/                      # Directory for downloaded prerequisite files
 ├── neo4j/
@@ -64,6 +62,8 @@ The project is organized into a modular pipeline, with each script performing a 
 ├── 8_ner_reconciliation.py         # Reconciles extracted entities with known nodes
 ├── 9_create_embeddings.py          # Builds the vector database from abstracts
 ├── 10_dgidb_importer.py            # Loads drug-gene interaction data from DGIdb
+├── 11_ppi_importer.py              # Loads protein-protein interactions from STRING-DB
+├── 12_encode_importer.py           # Loads regulatory elements from ENCODE
 |
 └── query_engine.py                 # The final, interactive RAG query engine
 ```
@@ -93,27 +93,15 @@ The project is organized into a modular pipeline, with each script performing a 
     CMAKE_ARGS="-DGGML_CUDA=on" FORCE_CMAKE=1 pip install llama-cpp-python --force-reinstall --upgrade --no-cache-dir
     ```
 
-3.  **Set up VEP Docker Environment (One-time only):**
-    Pull the latest VEP Docker image. The pipeline script will handle the rest of the setup.
+3.  **Set up VEP Docker Environment & Permissions:**
+    Pull the latest VEP Docker image and set the necessary directory permissions.
     ```bash
-    # Pull the latest official VEP Docker image
     docker pull ensemblorg/ensembl-vep:latest
-    
-    # Create the directory for VEP cache
-    mkdir -p ~/.vep
-    
-    # Set permissions to allow the Docker container to write to the cache
-    sudo chmod -R 777 ~/.vep
+    mkdir -p ~/.vep results neo4j/data
+    sudo chmod -R 777 ~/.vep results neo4j/data
     ```
 
-4. **Set Directory Permissions:**
-   The pipeline writes to the `results` directory. Ensure it has the correct permissions.
-   ```bash
-   mkdir -p results
-   sudo chmod -R 777 results
-   ```
-
-5.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
+4.  **Clean the Directory (Optional):** To start completely fresh, run the `clean.sh` script.
     ```bash
     bash clean.sh
     ```
@@ -131,7 +119,7 @@ Execute the master script. This will run the entire, fully automated data proces
 ```bash
 bash run_pipeline.sh
 ```
-*Note: The script now automatically handles VEP annotation and plugin management. There are no more manual steps.*
+*Note: The script now automatically handles all data downloads and processing steps. There are no manual interventions required.*
 
 ### Step 3: Query Your Knowledge Graph
 
